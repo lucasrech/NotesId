@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Caches & test artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment variables
+.env
+.env.*
+
+# Dataset & large audio files
+data/*
+!data/.gitkeep
+*.wav
+*.flac
+*.ogg
+*.mp3
+*.aiff
+*.zip
+*.tar.gz
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

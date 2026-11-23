@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar libsndfile1
+        run: sudo apt-get update && sudo apt-get install -y libsndfile1
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: uv sync --frozen
+
+      - name: Lint com ruff
+        run: uv run ruff check .
+
+      - name: Testes unitários com pytest
+        run: uv run pytest
