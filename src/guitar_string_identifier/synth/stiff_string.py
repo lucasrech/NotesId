@@ -213,12 +213,15 @@ def synthesize_from_guitar_position(
     f0 = midi_to_hz(midi)
     b0 = b0_by_string[string]
     b_val = predict_b_from_open(b0, fret)
+    # Perda por período ajustada à frequência para sustain realista (~3 dB/s na fundamental)
+    decay_per_period = float(np.clip(10.0 ** (-3.0 / (20.0 * max(f0, 50.0))), 0.990, 0.9995))
     params = SynthParams(
         f0=f0,
         b_coeff=b_val,
         sr=sr,
         duration=duration,
         pluck_position=pluck_position,
+        decay_base=decay_per_period,
         seed=seed,
     )
     audio = synthesize_stiff_string(params)

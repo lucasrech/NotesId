@@ -129,19 +129,20 @@ class YinPitchEstimator(PitchEstimator):
         else:
             starts = np.linspace(0, max_span, self.n_frames, dtype=int).tolist()
 
-        estimates: list[tuple[float, float]] = []
+        all_estimates: list[tuple[float, float]] = []
         for s in starts:
             frame = steady[s : s + frame_len]
             f0, aper = _yin_frame(frame, sr, self.fmin, self.fmax, self.threshold)
-            if f0 is not None and aper < 0.35:
-                estimates.append((f0, aper))
+            if f0 is not None:
+                all_estimates.append((f0, aper))
 
+        estimates = [pair for pair in all_estimates if pair[1] < 0.35]
         if not estimates:
-            # Tenta uma última vez sem filtro estrito de aperiodicidade
-            f0, aper = _yin_frame(steady[:frame_len], sr, self.fmin, self.fmax, 0.30)
-            if f0 is not None and aper < 0.60:
-                return f0
-            return None
+            relaxed = [pair for pair in all_estimates if pair[1] < 0.75]
+            if not relaxed:
+                return None
+            relaxed.sort(key=lambda pair: pair[1])
+            return relaxed[0][0]
 
         # Mediana das estimativas com melhor periodicidade (evita outliers de oitava)
         estimates.sort(key=lambda pair: pair[1])
