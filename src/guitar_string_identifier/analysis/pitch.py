@@ -1,4 +1,15 @@
-"""Estimativa de frequência fundamental (f0) via algoritmo YIN com precisão sub-cent."""
+"""Estimativa de frequência fundamental (`f0`) via algoritmo YIN com precisão sub-cent.
+
+Analogia do dia a dia:
+    O algoritmo YIN compara um trecho da onda sonora consigo mesmo deslocado no
+    tempo (como deslizar duas cópias transparentes da mesma onda até que os
+    desenhos se encaixem perfeitamente). O menor deslocamento `tau` em que a
+    onda "se repete" é o período `T`, e `f0 = sr / tau` (em Hz). A interpolação
+    parabólica ao redor do mínimo garante precisão melhor que 1 cent (1/100 de
+    semitom).
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md` (frequência, f0, cents).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +17,8 @@ import numpy as np
 
 from guitar_string_identifier.core.interfaces import PitchEstimator
 from guitar_string_identifier.core.types import Note
+
+__all__ = ["YinPitchEstimator"]
 
 
 def _yin_frame(
@@ -108,6 +121,19 @@ class YinPitchEstimator(PitchEstimator):
         self.n_frames = n_frames
 
     def estimate(self, note: Note) -> float | None:
+        """Estima a frequência fundamental `f0` em Hz no regime estacionário da nota.
+
+        Descarta os primeiros `transient_ms` milissegundos (onde o ruído da
+        palheta domina), mede `f0` em `n_frames` janelas distribuídas e retorna
+        a mediana das medições mais periódicas (evitando erros de oitava).
+
+        Args:
+            note: Nota isolada contendo `audio` e `sr` (Hz).
+
+        Returns:
+            Frequência fundamental estimada em Hz, ou `None` se o sinal não
+            apresentar periodicidade clara.
+        """
         audio = np.asarray(note.audio, dtype=np.float64)
         sr = note.sr
         if audio.size < 256:

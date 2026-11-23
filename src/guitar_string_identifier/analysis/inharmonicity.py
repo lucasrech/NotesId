@@ -1,10 +1,18 @@
-"""Extração de parciais e ajuste do coeficiente de inharmonicidade B.
+"""Extração de parciais e ajuste do coeficiente de inharmonicidade `B`.
 
-Modelo físico de corda rígida:
-    f_n = n * f0 * sqrt(1 + B * n^2)
+Analogia do dia a dia:
+    Uma corda de guitarra feita de aço não é perfeitamente mole como um barbante:
+    ela tem rigidez. Por isso, seus sobretons agudos (parciais `f_n`) soam um
+    pouquinho mais altos do que os múltiplos exatos `n * f0` — e quanto mais
+    curta ou rígida a corda, maior esse desvio `B`:
 
-Linearização exata:
-    (f_n / n)^2 = f0^2 + (f0^2 * B) * n^2
+        f_n = n * f0 * sqrt(1 + B * n^2)
+
+    Linearização exata usada no ajuste por mínimos quadrados robustos (IRLS):
+        (f_n / n)^2 = f0^2 + (f0^2 * B) * n^2
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md` (harmônicos, parciais,
+inharmonicidade, FFT, janela, zero-padding).
 """
 
 from __future__ import annotations
@@ -17,6 +25,8 @@ import numpy as np
 from guitar_string_identifier.core.interfaces import FeatureExtractor
 from guitar_string_identifier.core.music import freq_to_cents
 from guitar_string_identifier.core.types import Note, PartialInfo
+
+__all__ = ["InharmonicityExtractor"]
 
 
 def _parabolic_peak_freq(
@@ -244,6 +254,22 @@ class InharmonicityExtractor(FeatureExtractor):
         peak_tolerance_cents: float | None = None,
         iterative_narrowing: bool | None = None,
     ) -> dict[str, Any]:
+        """Calcula FFT longa, rastreia os parciais e ajusta `B` e `f0` refinada.
+
+        Args:
+            note: Nota isolada com `f0` inicial estimada (Hz).
+            window_sec: Sobrescreve duração da janela de FFT em segundos (opcional).
+            transient_ms: Sobrescreve descarte inicial do transiente em ms (opcional).
+            max_partials: Sobrescreve número máximo de parciais buscados (opcional).
+            peak_tolerance_cents: Sobrescreve tolerância de busca em cents (opcional).
+            iterative_narrowing: Se `True`, estreita a janela de busca em passes
+                sucessivos conforme `B` converge.
+
+        Returns:
+            Dicionário contendo `B`, `B_raw`, `B_std`, `B_residual_cents`, `B_r2`,
+            `f0_refined` (Hz), `n_partials_used`, `partials` (`list[PartialInfo]`),
+            e curvas `spectrum_freqs` / `spectrum_db` para exibição na interface.
+        """
         if note.f0 is None or note.f0 <= 0:
             return {
                 "B": None,

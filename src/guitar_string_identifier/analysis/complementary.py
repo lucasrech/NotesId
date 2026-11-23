@@ -1,4 +1,14 @@
-"""Características complementares: decaimento por parcial, posição de palhetada e espectro."""
+"""Características físicas complementares: decaimento (STFT), palhetada e brilho.
+
+Analogia do dia a dia:
+    Quando duas posições diferentes na guitarra têm quase a mesma rigidez `B`
+    (como corda 3 casa 5 vs corda 4 casa 10), pistas secundárias ajudam a
+    desempatar: quão rápido cada parcial apaga (decaimento em dB/s), quais
+    parciais foram anulados pelo ponto onde a palheta bateu, e o "brilho"
+    global do timbre (centroide e roll-off espectral, usados com peso baixo).
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md` (STFT, decaimento, posição de palhetada).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +20,8 @@ from scipy.signal import stft
 
 from guitar_string_identifier.core.interfaces import FeatureExtractor
 from guitar_string_identifier.core.types import Note, PartialInfo
+
+__all__ = ["ComplementaryFeatureExtractor"]
 
 
 class ComplementaryFeatureExtractor(FeatureExtractor):
@@ -30,6 +42,18 @@ class ComplementaryFeatureExtractor(FeatureExtractor):
         self.rolloff_percent = rolloff_percent
 
     def extract(self, note: Note, partials: list[PartialInfo] | None = None) -> dict[str, Any]:
+        """Extrai decaimento por parcial (dB/s), posição de palhetada, centroide e roll-off.
+
+        Args:
+            note: Nota isolada com áudio, `sr` (Hz) e `f0` (Hz).
+            partials: Lista de parciais já medidos pelo `InharmonicityExtractor`
+                (opcional; melhora a precisão do rastreamento na STFT e dos nulos).
+
+        Returns:
+            Dicionário com `decay_rates`, `decay_mean_db_s`, `decay_ratio_high_low`,
+            `pluck_position_rel`, `spectral_centroid_hz`, `spectral_centroid_ratio`
+            e `spectral_rolloff_hz`.
+        """
         audio = np.asarray(note.audio, dtype=np.float64)
         sr = note.sr
         f0 = note.f0

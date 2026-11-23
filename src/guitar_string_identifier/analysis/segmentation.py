@@ -1,4 +1,15 @@
-"""Segmentação de notas por detecção de onset (fluxo espectral e energia)."""
+"""Segmentação de notas por detecção de ataque (onset via fluxo espectral e energia).
+
+Analogia do dia a dia:
+    Antes de analisar uma nota, precisamos recortar onde ela começa na gravação
+    — como cortar uma foto para tirar as bordas vazias. Para arquivos já
+    recortados de um dataset, `WholeFileSegmenter` apenas pula o silêncio inicial.
+    Para gravações contínuas com várias notas, `OnsetNoteSegmenter` procura saltos
+    súbitos de energia e conteúdo espectral (fluxo espectral) que marcam cada
+    palhetada.
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md` (STFT).
+"""
 
 from __future__ import annotations
 
@@ -8,18 +19,43 @@ from scipy.signal import stft
 from guitar_string_identifier.core.interfaces import NoteSegmenter
 from guitar_string_identifier.core.types import Note
 
+__all__ = ["OnsetNoteSegmenter", "WholeFileSegmenter"]
+
 
 class WholeFileSegmenter(NoteSegmenter):
     """Trata o arquivo inteiro como uma única nota (ideal para datasets recortados).
 
-    Localiza o início real do ataque (acima de um limiar relativo ao pico) para
-    definir `t0` com precisão antes do descarte do transiente.
+    Localiza o início real do ataque (onde a amplitude ultrapassa um limiar relativo
+    ao pico) para definir `t0` com precisão antes do descarte do transiente.
+
+    Attributes:
+        silence_threshold_db: Limiar relativo ao pico (em dB) abaixo do qual o
+            trecho inicial é considerado silêncio (padrão: -40,0 dB).
     """
 
     def __init__(self, silence_threshold_db: float = -40.0) -> None:
         self.silence_threshold_db = silence_threshold_db
 
     def segment(self, audio: np.ndarray, sr: int) -> list[Note]:
+        """Detecta múltiplos ataques (onsets) via STFT e fatia o sinal em notas.
+
+        Args:
+            audio: Vetor de amostras de áudio contínuo.
+            sr: Taxa de amostragem em Hz.
+
+        Returns:
+            Lista de objetos `Note`, um para cada ataque detectado com duração
+            maior ou igual a `min_note_duration` segundos.
+        """
+        """Remove o silêncio inicial e retorna o restante do arquivo como uma única `Note`.
+
+        Args:
+            audio: Vetor de amostras de áudio (mono ou estéreo).
+            sr: Taxa de amostragem em Hz.
+
+        Returns:
+            Lista contendo 1 `Note` (ou vazia se o áudio estiver em silêncio).
+        """
         if audio.size == 0:
             return []
         mono = np.asarray(audio, dtype=np.float64)
@@ -58,6 +94,16 @@ class OnsetNoteSegmenter(NoteSegmenter):
         self.min_rms_db = min_rms_db
 
     def segment(self, audio: np.ndarray, sr: int) -> list[Note]:
+        """Detecta múltiplos ataques (onsets) via STFT e fatia o sinal em notas.
+
+        Args:
+            audio: Vetor de amostras de áudio contínuo.
+            sr: Taxa de amostragem em Hz.
+
+        Returns:
+            Lista de objetos `Note`, um para cada ataque detectado com duração
+            maior ou igual a `min_note_duration` segundos.
+        """
         if audio.size < self.frame_size:
             return []
         mono = np.asarray(audio, dtype=np.float64)
