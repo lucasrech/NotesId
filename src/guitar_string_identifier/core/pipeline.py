@@ -1,4 +1,14 @@
-"""Pipeline configurável ponta a ponta: AudioSource -> ... -> Result."""
+"""Orquestrador ponta a ponta do pipeline de identificação do NotesId.
+
+Analogia do dia a dia:
+    Se cada módulo de processamento (`NoteSegmenter`, `YinPitchEstimator`,
+    `InharmonicityExtractor`, `GaussianStringClassifier`) é um especialista em
+    uma tarefa, o `GuitarIdentifierPipeline` é o maestro que coordena a ordem
+    exata em que cada especialista trabalha sobre a nota tocada até entregar
+    o veredito final (`Result`).
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md`.
+"""
 
 from __future__ import annotations
 
@@ -25,9 +35,19 @@ from guitar_string_identifier.core.types import Features, Note, Result
 from guitar_string_identifier.profiles.schema import GuitarProfile
 from guitar_string_identifier.sources.file_source import FileAudioSource
 
+__all__ = ["GuitarIdentifierPipeline"]
+
 
 class GuitarIdentifierPipeline:
-    """Orquestra todas as etapas trocáveis a partir de um GuitarProfile."""
+    """Executa o fluxo completo `Áudio → Segmentação → f0 → Características → Classificador`.
+
+    Todas as etapas podem ser substituídas por implementações alternativas via
+    injeção de dependência no construtor, ou configuradas pelo `GuitarProfile`.
+
+    Attributes:
+        profile: Perfil de configuração ativo (captação, instrumento, análise e calibração).
+        reject_bad_input: Se `True`, rejeita silêncio, clipping e acordes antes de classificar.
+    """
 
     def __init__(
         self,
@@ -72,12 +92,30 @@ class GuitarIdentifierPipeline:
         self.label_provider = label_provider
 
     def analyze_note(self, note: Note, *, provisional: bool = False) -> Result:
-        """Executa f0 -> candidatos -> características -> classificador em uma Note."""
+        """Executa todas as etapas de análise sobre uma única nota já recortada.
+
+        Passos internos:
+            1. (Opcional) Rejeita silêncio e saturação/clipping severo.
+            2. Estima a frequência fundamental `f0` em Hz (via YIN).
+            3. (Opcional) Rejeita acordes (múltiplas notas simultâneas).
+            4. Resolve parâmetros adaptativos (`auto` vs `manual`) para esta nota.
+            5. Extrai os parciais e ajusta a inharmonicidade `B` (e `f0` refinada).
+            6. Extrai características complementares (decaimento, palhetada, brilho).
+            7. Gera os candidatos `(corda, casa)` compatíveis e classifica.
+
+        Args:
+            note: Nota isolada contendo vetor de áudio e taxa de amostragem em Hz.
+            provisional: Marca o resultado como provisório (usado em modo ao vivo
+                progressivo enquanto a nota ainda está sustentando).
+
+        Returns:
+            Objeto `Result` com corda, casa, nota, confiança, candidatos e características.
+        """
         ac = self.profile.analysis
         ic = self.profile.instrument
         cc = self.profile.capture
 
-        # Validação inicial de qualidade (silêncio / clipping) quando ativa
+        # Passo 1: validação prévia de qualidade (silêncio / clipping) quando ativa
         if self.reject_bad_input:
             q_pre = self.level_analyzer.check_input_quality(
                 note.audio,
@@ -99,6 +137,7 @@ class GuitarIdentifierPipeline:
                     provisional=provisional,
                 )
 
+        # Passo 2: estima a frequência fundamental (f0 em Hz)
         f0 = note.f0 if note.f0 is not None else self.pitch_estimator.estimate(note)
         if f0 is None or f0 <= 0:
             return Result(
@@ -114,7 +153,7 @@ class GuitarIdentifierPipeline:
                 provisional=provisional,
             )
 
-        # Validação de acorde (múltiplas f0)
+        # Passo 3: verifica se há múltiplas notas simultâneas (acorde)
         if self.reject_bad_input:
             q_poly = self.level_analyzer.check_input_quality(
                 note.audio,
@@ -138,7 +177,7 @@ class GuitarIdentifierPipeline:
 
         note.f0 = f0
 
-        # Resolve parâmetros adaptativos (modo 'auto' vs 'manual')
+        # Passo 4: resolve parâmetros de análise (modo 'auto' adaptativo ou 'manual')
         resolved = self.adaptive.resolve_for_note(
             audio=note.audio,
             sr=note.sr,
@@ -150,6 +189,7 @@ class GuitarIdentifierPipeline:
             manual_peak_tol=ac.peak_tolerance_cents,
         )
 
+        # Passo 5: extrai parciais e ajusta a inharmonicidade B (característica principal)
         inh_feats = self.inharmonicity_extractor.extract(
             note,
             window_sec=resolved.window_sec,
@@ -161,6 +201,7 @@ class GuitarIdentifierPipeline:
         f0_ref = float(inh_feats.get("f0_refined") or f0)
         note.f0 = f0_ref
 
+        # Passo 6: extrai características complementares (decaimento STFT, palhetada, brilho)
         comp_feats = self.complementary_extractor.extract(
             note, partials=inh_feats.get("partials")
         )
@@ -175,6 +216,7 @@ class GuitarIdentifierPipeline:
             }
         )
 
+        # Passo 7: lista candidatos compatíveis com f0 e classifica entre eles
         candidates = generate_candidates(
             f0_ref,
             tuning=ic.tuning,
@@ -195,7 +237,16 @@ class GuitarIdentifierPipeline:
         sr: int,
         source_path: str | None = None,
     ) -> list[Result]:
-        """Segmenta o áudio e analisa todas as notas encontradas."""
+        """Segmenta um sinal de áudio em notas e analisa cada uma delas.
+
+        Args:
+            audio: Vetor de amostras de áudio em `float64`.
+            sr: Taxa de amostragem em Hz.
+            source_path: Caminho opcional do arquivo para conferência de gabarito.
+
+        Returns:
+            Lista de `Result` (um por nota segmentada).
+        """
         notes = self.segmenter.segment(audio, sr)
         results: list[Result] = []
         for note in notes:
@@ -204,13 +255,28 @@ class GuitarIdentifierPipeline:
         return results
 
     def analyze_source(self, source: AudioSource) -> list[Result]:
-        """Lê de uma AudioSource e executa o pipeline."""
+        """Lê áudio diretamente de uma `AudioSource` e executa o pipeline.
+
+        Args:
+            source: Implementação de `AudioSource` (arquivo, buffer ao vivo, etc.).
+
+        Returns:
+            Lista de `Result` produzidos.
+        """
         audio, sr = source.read()
         source_path = str(source.path) if isinstance(source, FileAudioSource) else None
         return self.analyze_audio(audio, sr, source_path=source_path)
 
     def analyze_file(self, path: Path | str) -> Result:
-        """Atalho para analisar um arquivo de nota isolada."""
+        """Atalho conveniente para analisar um arquivo de áudio com uma única nota.
+
+        Args:
+            path: Caminho do arquivo (WAV, FLAC, OGG ou AIFF).
+
+        Returns:
+            Primeiro `Result` encontrado no arquivo, ou resultado `indeterminate`
+            se nenhuma nota audível for detectada.
+        """
         source = FileAudioSource(path, channel=self.profile.capture.channel)
         results = self.analyze_source(source)
         if not results:
