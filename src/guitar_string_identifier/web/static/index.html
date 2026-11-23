@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Identificador de Corda e Casa de Guitarra</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">🎸</div>
+      <div>
+        <h1>Identificador de Corda e Casa</h1>
+        <p class="subtitle">Processamento Clássico de Sinais • Inharmonicidade (sem ML)</p>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="active-profile-pill" title="Perfil de guitarra atualmente ativo">
+        <span class="pill-label">Perfil ativo:</span>
+        <strong id="activeProfileBadge">egfxset</strong>
+        <span id="calibrationBadge" class="cal-dot" title="Status da calibração"></span>
+      </div>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="identify" role="tab">Identificar</button>
+        <button class="tab-btn" data-tab="config" role="tab">Configuração &amp; Perfis</button>
+        <button class="tab-btn" data-tab="calibrate" role="tab">Calibração Guiada</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- ==================== ABA 1: IDENTIFICAR ==================== -->
+    <section id="tab-identify" class="tab-panel active">
+      <!-- Quadro grande e central de resultado -->
+      <div class="hero-card" id="resultHero">
+        <div class="hero-main">
+          <div class="hero-note-wrap">
+            <span class="hero-label">Nota tocada</span>
+            <div class="hero-note" id="resNote">—</div>
+            <div class="hero-f0" id="resF0">Aguardando áudio...</div>
+          </div>
+
+          <div class="hero-pos-wrap">
+            <span class="hero-label">Posição identificada</span>
+            <div class="hero-position" id="resPosition">—</div>
+            <div class="confidence-wrap">
+              <div class="confidence-header">
+                <span>Confiança</span>
+                <strong id="resConfidenceText">—</strong>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="resConfidenceBar" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Conferência de acerto (Ground Truth) -->
+        <div class="gt-box gt-neutral" id="gtBox">
+          <div class="gt-status" id="gtStatus">Sem rótulo para conferir</div>
+          <div class="gt-details" id="gtDetails">
+            Selecione um arquivo do EGFxSet ou envie um áudio para analisar.
+          </div>
+        </div>
+      </div>
+
+      <!-- Grid principal: Entrada à esquerda, Candidatos + Espectro à direita -->
+      <div class="grid-two">
+        <!-- Painel de entrada -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Fonte de Áudio</h2>
+            <div class="mode-switch">
+              <button class="mode-btn active" data-mode="file">Arquivo / Dataset</button>
+              <button class="mode-btn" data-mode="live">Ao vivo (placa de captura)</button>
+            </div>
+          </div>
+
+          <!-- Modo Arquivo / Dataset -->
+          <div id="mode-file" class="mode-panel active">
+            <div class="upload-zone" id="uploadZone">
+              <input type="file" id="audioFileInput" accept=".wav,.flac,.ogg,.aiff,.aif,audio/*" hidden />
+              <p><strong>Arraste um arquivo de áudio</strong> ou clique para selecionar</p>
+              <span class="hint">WAV, FLAC, OGG, AIFF (lido via soundfile)</span>
+            </div>
+
+            <div class="divider"><span>ou navegue no dataset EGFxSet local</span></div>
+
+            <div class="dataset-controls">
+              <div class="filter-row">
+                <label>
+                  Captador
+                  <select id="filterPickup">
+                    <option value="">Todos</option>
+                  </select>
+                </label>
+                <label>
+                  Corda
+                  <select id="filterString">
+                    <option value="">Todas</option>
+                    <option value="1">1 (E4)</option>
+                    <option value="2">2 (B3)</option>
+                    <option value="3">3 (G3)</option>
+                    <option value="4">4 (D3)</option>
+                    <option value="5">5 (A2)</option>
+                    <option value="6">6 (E2)</option>
+                  </select>
+                </label>
+                <label>
+                  Casa
+                  <input type="number" id="filterFret" min="0" max="22" placeholder="0–22" />
+                </label>
+              </div>
+              <div class="quick-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="btnShowC4">
+                  Destaque: 5 posições do Dó4 (C4)
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btnClearFilters">
+                  Limpar filtros
+                </button>
+                <span class="dataset-count" id="datasetCount"></span>
+              </div>
+            </div>
+
+            <div class="dataset-list" id="datasetList">
+              <p class="muted">Carregando lista do dataset...</p>
+            </div>
+          </div>
+
+          <!-- Modo Ao Vivo -->
+          <div id="mode-live" class="mode-panel">
+            <div class="info-banner">
+              Captura via <strong>Web Audio API</strong> no navegador (com
+              <code>echoCancellation</code>, <code>noiseSuppression</code> e
+              <code>autoGainControl</code> desativados), enviando PCM float32 ao servidor por WebSocket.
+            </div>
+
+            <div class="form-group">
+              <label for="audioDeviceSelect">Dispositivo de entrada (placa de captura)</label>
+              <div class="inline-row">
+                <select id="audioDeviceSelect">
+                  <option value="">Clique em "Atualizar dispositivos"</option>
+                </select>
+                <button type="button" class="btn btn-secondary" id="btnRefreshDevices">
+                  Atualizar
+                </button>
+              </div>
+              <span class="hint" id="liveSampleRateInfo">Taxa real obtida: aguardando início</span>
+            </div>
+
+            <div class="live-controls">
+              <button type="button" class="btn btn-primary" id="btnLiveToggle">
+                Iniciar captura
+              </button>
+              <button type="button" class="btn btn-secondary" id="btnLiveAnalyzeNow" disabled>
+                Analisar agora
+              </button>
+              <span class="live-status" id="liveStatus">Parado</span>
+            </div>
+
+            <div class="meter-card">
+              <div class="meter-header">
+                <span>Nível do sinal</span>
+                <div>
+                  <span id="meterDb">-∞ dB</span>
+                  <span id="clippingBadge" class="clip-badge hidden">CLIPPING!</span>
+                </div>
+              </div>
+              <div class="meter-track">
+                <div class="meter-fill" id="meterFill" style="width: 0%"></div>
+              </div>
+              <span class="hint">Toque uma nota isolada e aguarde ~0,8 s para análise automática.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Painel de Candidatos e Características -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Candidatos (Corda × Casa)</h2>
+            <span class="hint" id="bSummary">B medido: —</span>
+          </div>
+
+          <div id="candidatesList" class="candidates-list">
+            <p class="muted">Nenhum candidato analisado ainda.</p>
+          </div>
+
+          <div class="features-grid" id="featuresGrid">
+            <div class="feat-item">
+              <span class="feat-label">Inharmonicidade B</span>
+              <strong id="featB">—</strong>
+            </div>
+            <div class="feat-item">
+              <span class="feat-label">Resíduo do ajuste</span>
+              <strong id="featRes">—</strong>
+            </div>
+            <div class="feat-item">
+              <span class="feat-label">Parciais usados</span>
+              <strong id="featPartials">—</strong>
+            </div>
+            <div class="feat-item">
+              <span class="feat-label">Decaimento médio</span>
+              <strong id="featDecay">—</strong>
+            </div>
+            <div class="feat-item">
+              <span class="feat-label">Posição palhetada</span>
+              <strong id="featPluck">—</strong>
+            </div>
+            <div class="feat-item">
+              <span class="feat-label">Centroide / Roll-off</span>
+              <strong id="featSpectral">—</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gráfico de espectro -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Espectro: Parciais Medidos vs Harmônicos Ideais (n·f0)</h2>
+          <div class="legend">
+            <span class="legend-item"><i class="dot dot-spec"></i> Espectro (dB)</span>
+            <span class="legend-item"><i class="dot dot-ideal"></i> Harmônico ideal n·f0</span>
+            <span class="legend-item"><i class="dot dot-meas"></i> Parcial medido f_n</span>
+          </div>
+        </div>
+        <canvas id="spectrumCanvas" width="1100" height="280"></canvas>
+      </div>
+    </section>
+
+    <!-- ==================== ABA 2: CONFIGURAÇÃO & PERFIS ==================== -->
+    <section id="tab-config" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <h2>Gerenciador de Perfis</h2>
+          <span class="hint">Salvos em <code>configs/profiles/&lt;nome&gt;.yaml</code></span>
+        </div>
+
+        <div class="profile-toolbar">
+          <select id="profileSelect"></select>
+          <button type="button" class="btn btn-primary" id="btnActivateProfile">Ativar</button>
+          <button type="button" class="btn btn-secondary" id="btnNewProfile">Novo</button>
+          <button type="button" class="btn btn-secondary" id="btnDuplicateProfile">Duplicar</button>
+          <button type="button" class="btn btn-secondary" id="btnRenameProfile">Renomear</button>
+          <button type="button" class="btn btn-danger" id="btnDeleteProfile">Excluir</button>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px">
+          <label for="cfgDescription">Descrição do perfil</label>
+          <input type="text" id="cfgDescription" />
+        </div>
+      </div>
+
+      <form id="configForm" class="config-grid">
+        <!-- Bloco 1: Captação -->
+        <div class="card">
+          <h3>1. Captação</h3>
+          <p class="hint">Parâmetros da fonte de áudio e interface de captura.</p>
+
+          <div class="form-group">
+            <label for="cfgSourceMode">Modo padrão de fonte</label>
+            <select id="cfgSourceMode">
+              <option value="dataset">Dataset (EGFxSet)</option>
+              <option value="file">Arquivo local</option>
+              <option value="live_browser">Ao vivo (navegador / Web Audio)</option>
+              <option value="live_server">Ao vivo (servidor / sounddevice)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="cfgDeviceName">Dispositivo / placa (opcional)</label>
+            <input type="text" id="cfgDeviceName" placeholder="Deixe vazio para padrão" />
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgSampleRate">Taxa de amostragem (Hz)</label>
+              <input type="number" id="cfgSampleRate" min="8000" max="192000" step="1000" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgChannel">Canal (0 = mono/L)</label>
+              <input type="number" id="cfgChannel" min="0" max="32" required />
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgGain">Ganho de referência (dB)</label>
+              <input type="number" id="cfgGain" min="-60" max="60" step="0.5" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgBufferSize">Tamanho do buffer</label>
+              <input type="number" id="cfgBufferSize" min="256" max="65536" step="256" required />
+            </div>
+          </div>
+        </div>
+
+        <!-- Bloco 2: Instrumento -->
+        <div class="card">
+          <h3>2. Instrumento</h3>
+          <p class="hint">Afinação, escala e encordoamento (campos vazios = "a estimar").</p>
+
+          <div class="form-group">
+            <label for="cfgModelName">Modelo do instrumento</label>
+            <input type="text" id="cfgModelName" required />
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgNumFrets">Número de casas</label>
+              <input type="number" id="cfgNumFrets" min="12" max="27" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgScaleMm">Escala (mm)</label>
+              <input type="number" id="cfgScaleMm" min="500" max="800" step="0.5" required />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="cfgPickup">Captador (opcional)</label>
+            <input type="text" id="cfgPickup" placeholder="Ex: Bridge, Neck, Middle" />
+          </div>
+
+          <div class="strings-table-wrap">
+            <table class="strings-table">
+              <thead>
+                <tr>
+                  <th>Corda</th>
+                  <th>Afinação</th>
+                  <th>Tipo <span class="badge-est">a estimar</span></th>
+                  <th>Calibre (pol.) <span class="badge-est">a estimar</span></th>
+                </tr>
+              </thead>
+              <tbody id="cfgStringsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bloco 3: Análise -->
+        <div class="card">
+          <h3>3. Análise &amp; Classificador</h3>
+          <p class="hint">Parâmetros de FFT, busca de parciais, confiança e pesos.</p>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgWindowSec">Janela FFT (s)</label>
+              <input type="number" id="cfgWindowSec" min="0.2" max="3.0" step="0.05" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgTransientMs">Descarte transiente (ms)</label>
+              <input type="number" id="cfgTransientMs" min="0" max="300" step="5" required />
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgMaxPartials">Nº máximo de parciais</label>
+              <input type="number" id="cfgMaxPartials" min="4" max="25" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgPeakTol">Tolerância de picos (cents)</label>
+              <input type="number" id="cfgPeakTol" min="5" max="120" step="1" required />
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgMinConf">Confiança mínima</label>
+              <input type="number" id="cfgMinConf" min="0" max="1" step="0.05" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgMinMargin">Margem mínima (empate)</label>
+              <input type="number" id="cfgMinMargin" min="0" max="1" step="0.02" required />
+            </div>
+          </div>
+
+          <div class="form-row-3">
+            <div class="form-group">
+              <label for="cfgWeightB">Peso B</label>
+              <input type="number" id="cfgWeightB" min="0" max="10" step="0.05" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgWeightDecay">Peso decaimento</label>
+              <input type="number" id="cfgWeightDecay" min="0" max="5" step="0.05" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgWeightSpec">Peso espectral</label>
+              <input type="number" id="cfgWeightSpec" min="0" max="2" step="0.01" required />
+            </div>
+          </div>
+
+          <div class="cal-summary-box" id="cfgCalibrationSummary"></div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Salvar alterações no perfil</button>
+            <span id="cfgSaveFeedback" class="feedback-msg"></span>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- ==================== ABA 3: CALIBRAÇÃO GUIADA ==================== -->
+    <section id="tab-calibrate" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Assistente de Calibração por Guitarra</h2>
+            <p class="hint">
+              Toque cada corda solta (casa 0) e na casa 12 (ou envie arquivos WAV). O sistema mede B,
+              mostra o resíduo do ajuste e rejeita automaticamente notas com ruído excessivo.
+            </p>
+          </div>
+          <div class="cal-header-actions">
+            <button type="button" class="btn btn-primary" id="btnApplyCalibration" disabled>
+              Aplicar e Salvar no Perfil Ativo
+            </button>
+          </div>
+        </div>
+
+        <div id="calFeedback" class="feedback-banner hidden"></div>
+
+        <div class="cal-table-wrap">
+          <table class="cal-table">
+            <thead>
+              <tr>
+                <th>Passo</th>
+                <th>Posição</th>
+                <th>Nota esperada</th>
+                <th>Capturar / Enviar</th>
+                <th>B medido</th>
+                <th>B0 implícito</th>
+                <th>Resíduo</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="calStepsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
