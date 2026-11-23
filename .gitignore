@@ -39,3 +39,6 @@ data/*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local simulation sandbox (never committed)
+local_sim/
