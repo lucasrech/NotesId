@@ -155,6 +155,7 @@ def _build_autotune_profile(
 
 
 def main() -> int:
+    """Executa avaliação offline no EGFxSet (com separação estrita por casa) e gera relatório."""
     parser = argparse.ArgumentParser(
         description="Avalia o identificador no EGFxSet com separação calibração/teste por casa."
     )

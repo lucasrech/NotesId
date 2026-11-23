@@ -52,6 +52,16 @@ class LevelAnalyzer:
         audio: np.ndarray,
         noise_floor_db: float | None = None,
     ) -> LevelAnalysisResult:
+        """Mede pico (dBFS), RMS e proporção de clipping de uma nota forte.
+
+        Args:
+            audio: Vetor de amostras da nota tocada com força.
+            noise_floor_db: Piso de ruído prévio em dBFS (opcional, para contexto).
+
+        Returns:
+            `LevelAnalysisResult` com status (`too_low`, `good` ou `clipping`) e
+            orientação em linguagem simples para ajustar o ganho físico da interface.
+        """
         sig = np.asarray(audio, dtype=np.float64).reshape(-1)
         if sig.size == 0:
             return LevelAnalysisResult(

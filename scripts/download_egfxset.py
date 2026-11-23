@@ -73,6 +73,7 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
 
 
 def main() -> int:
+    """Ponto de entrada CLI para listar, baixar, verificar MD5 e extrair o EGFxSet."""
     parser = argparse.ArgumentParser(
         description="Download do dataset EGFxSet (Zenodo 7044411)."
     )

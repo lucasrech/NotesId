@@ -74,6 +74,15 @@ class HumDetector:
         return max_prom, detected_harmonics
 
     def detect(self, silence_audio: np.ndarray, sr: int) -> HumDetectionResult:
+        """Detecta se há ronco estreito em 60 Hz (prioridade Brasil) ou 50 Hz e harmônicos.
+
+        Args:
+            silence_audio: Trecho de silêncio capturado (~2 s) com volume da guitarra aberto.
+            sr: Taxa de amostragem em Hz.
+
+        Returns:
+            `HumDetectionResult` indicando se houve detecção e quais faixas excluir.
+        """
         sig = np.asarray(silence_audio, dtype=np.float64).reshape(-1)
         if sig.size < int(0.4 * sr):
             return HumDetectionResult(

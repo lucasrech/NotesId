@@ -1,3 +1,16 @@
+/**
+ * @fileoverview Processador AudioWorklet do NotesId para captura de áudio PCM em tempo real.
+ *
+ * Analogia: em vez de travar a interface do navegador lendo o som amostra por
+ * amostra na thread principal, este processador roda em uma thread exclusiva de
+ * áudio, acumula blocos de tamanho fixo (ex.: 2048 amostras ≈ 42 ms a 48 kHz)
+ * e envia cada bloco pronto via `postMessage` para ser transmitido ao backend.
+ */
+
+/**
+ * Acumula amostras do canal selecionado em blocos `Float32Array` e os transfere
+ * (zero-copy) para a thread principal.
+ */
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();

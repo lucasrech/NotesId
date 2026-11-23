@@ -50,15 +50,21 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 class RenameRequest(BaseModel):
+    """Corpo de requisição para renomear ou duplicar um perfil."""
+
     new_name: str
 
 
 class DatasetAnalyzeRequest(BaseModel):
+    """Corpo de requisição para analisar um arquivo local do dataset EGFxSet."""
+
     rel_path: str
     profile: str | None = None
 
 
 class CalibrationApplySample(BaseModel):
+    """Amostra individual já medida enviada para consolidação na calibração."""
+
     string: int
     fret: int
     accepted: bool
@@ -73,12 +79,16 @@ class CalibrationApplySample(BaseModel):
 
 
 class CalibrationApplyRequest(BaseModel):
+    """Requisição para consolidar e salvar a calibração no perfil selecionado."""
+
     profile: str | None = None
     samples: list[CalibrationApplySample]
     notes_label: str = "Calibração guiada via interface web."
 
 
 class CalibrationPcmRequest(BaseModel):
+    """Requisição com bloco PCM em memória para medir uma nota de calibração."""
+
     profile: str | None = None
     string: int
     fret: int
@@ -87,15 +97,21 @@ class CalibrationPcmRequest(BaseModel):
 
 
 class AutoTuneCreateRequest(BaseModel):
+    """Parâmetros iniciais para abrir uma sessão do assistente Auto Tuning."""
+
     mode: Literal["live", "dataset"] = "live"
     profile: str | None = None
 
 
 class DeviceRankRequest(BaseModel):
+    """Lista de dispositivos de entrada do navegador para ordenação heurística."""
+
     devices: list[dict[str, str]]
 
 
 class AutoTuneDeviceRequest(BaseModel):
+    """Dados da placa, taxa real, canal e latência medidos na Etapa 1 do Auto Tuning."""
+
     device_name: str | None = None
     sample_rate: int = 48000
     channel: int = 0
@@ -103,21 +119,29 @@ class AutoTuneDeviceRequest(BaseModel):
 
 
 class AutoTuneSilenceRequest(BaseModel):
+    """Áudio de silêncio (~2 s) enviado na Etapa 2 para piso de ruído e ronco 50/60 Hz."""
+
     sample_rate: int = 48000
     samples: list[float]
 
 
 class AutoTuneLevelRequest(BaseModel):
+    """Áudio de nota forte enviado na Etapa 3 para checagem de nível e clipping."""
+
     samples: list[float]
 
 
 class AutoTuneTuningRequest(BaseModel):
+    """Áudio de uma corda solta enviado na Etapa 4 para detecção de afinação."""
+
     string: int
     sample_rate: int = 48000
     samples: list[float]
 
 
 class AutoTuneCalibrationRequest(BaseModel):
+    """Áudio de uma nota `(corda, casa)` enviado na Etapa 5 do Auto Tuning."""
+
     string: int
     fret: int
     sample_rate: int = 48000
@@ -125,12 +149,16 @@ class AutoTuneCalibrationRequest(BaseModel):
 
 
 class AutoTuneDatasetRequest(BaseModel):
+    """Configuração do Auto Tuning offline restrito às casas de calibração do dataset."""
+
     cal_frets: list[int] = [0, 12]
     pickup: str | None = None
     target_error_rate: float = 0.10
 
 
 class AutoTuneApplyRequest(BaseModel):
+    """Confirmação explícita do usuário para aplicar a proposta ou salvar novo perfil."""
+
     action: Literal["apply_active", "save_as_new"] = "apply_active"
     new_name: str | None = None
 

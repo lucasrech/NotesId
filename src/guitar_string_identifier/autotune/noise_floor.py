@@ -29,6 +29,15 @@ class NoiseFloorEstimator:
         self.onset_margin_db = onset_margin_db
 
     def estimate(self, audio: np.ndarray, sr: int) -> NoiseFloorResult:
+        """Calcula RMS, pico e espectro de ruído a partir de ~2 s de silêncio.
+
+        Args:
+            audio: Amostras capturadas com as cordas em repouso.
+            sr: Taxa de amostragem em Hz.
+
+        Returns:
+            `NoiseFloorResult` com piso de ruído (dBFS) e limiar de onset sugerido.
+        """
         sig = np.asarray(audio, dtype=np.float64).reshape(-1)
         if sig.size < 256:
             return NoiseFloorResult(

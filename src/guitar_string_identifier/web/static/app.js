@@ -1,3 +1,17 @@
+/**
+ * @fileoverview Controlador do frontend web do NotesId (pt-BR, sem etapa de build).
+ *
+ * Responsabilidades principais:
+ * 1. Modo Arquivo / Dataset: upload de WAV/FLAC/OGG e navegador local do EGFxSet.
+ * 2. Modo Ao Vivo: captura contínua via AudioWorklet (`pcm-worklet.js`) e envio
+ *    de blocos PCM float32 ao WebSocket `/ws/live`, com exibição progressiva.
+ * 3. Visualização: quadro central de nota/corda/casa/confiança, conferência de
+ *    acerto (ground truth) e gráfico de espectro (Canvas 2D) com parciais vs n·f0.
+ * 4. Configuração & Perfis: edição dos 3 blocos, alternância `auto`/`manual` e CRUD.
+ * 5. Calibração Guiada e Assistente Auto Tuning (6 etapas + proposta de revisão).
+ *
+ * Glossário de termos musicais/DSP: `docs/GLOSSARY.pt-BR.md`.
+ */
 "use strict";
 
 const state = {
