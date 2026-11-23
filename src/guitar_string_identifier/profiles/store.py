@@ -27,9 +27,21 @@ class ProfileStore:
         return sorted(p.stem for p in self.profiles_dir.glob("*.yaml"))
 
     def exists(self, name: str) -> bool:
+        """Retorna `True` se o arquivo YAML do perfil existir em disco."""
         return self._profile_path(name).exists()
 
     def load(self, name: str) -> GuitarProfile:
+        """Lê e valida um perfil YAML pelo nome.
+
+        Args:
+            name: Nome do perfil (sem `.yaml`).
+
+        Returns:
+            Instância validada de `GuitarProfile`.
+
+        Raises:
+            FileNotFoundError: Se o perfil não existir.
+        """
         path = self._profile_path(name)
         if not path.exists():
             raise FileNotFoundError(f"Perfil '{name}' não encontrado em {path}.")
@@ -39,6 +51,7 @@ class ProfileStore:
         return GuitarProfile.model_validate(raw)
 
     def save(self, profile: GuitarProfile) -> Path:
+        """Serializa e grava um `GuitarProfile` em `configs/profiles/<nome>.yaml`."""
         path = self._profile_path(profile.name)
         data = profile.model_dump(mode="python")
         with path.open("w", encoding="utf-8") as fp:
@@ -46,6 +59,7 @@ class ProfileStore:
         return path
 
     def duplicate(self, source_name: str, target_name: str) -> GuitarProfile:
+        """Cria uma cópia independente de um perfil existente com novo nome."""
         if self.exists(target_name):
             raise FileExistsError(f"Perfil '{target_name}' já existe.")
         profile = self.load(source_name)
@@ -54,6 +68,7 @@ class ProfileStore:
         return cloned
 
     def rename(self, old_name: str, new_name: str) -> GuitarProfile:
+        """Renomeia um perfil existente em disco preservando todas as configurações."""
         if old_name == new_name:
             return self.load(old_name)
         if self.exists(new_name):
@@ -65,6 +80,7 @@ class ProfileStore:
         return renamed
 
     def delete(self, name: str) -> None:
+        """Remove permanentemente o arquivo YAML do perfil informado."""
         path = self._profile_path(name)
         if not path.exists():
             raise FileNotFoundError(f"Perfil '{name}' não encontrado.")

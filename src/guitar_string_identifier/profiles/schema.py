@@ -153,6 +153,7 @@ class InstrumentConfig(BaseModel):
     @field_validator("tuning")
     @classmethod
     def validate_tuning(cls, value: dict[int, str]) -> dict[int, str]:
+        """Valida que a afinação contém ao menos uma corda e nomes de notas válidos."""
         if not value:
             raise ValueError("A afinação deve conter ao menos uma corda.")
         cleaned: dict[int, str] = {}
@@ -305,6 +306,7 @@ class GuitarProfile(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
+        """Garante que o nome do perfil não contenha separadores de caminho."""
         cleaned = value.strip()
         if not cleaned or "/" in cleaned or "\\" in cleaned or ".." in cleaned:
             raise ValueError("Nome de perfil inválido.")
@@ -313,6 +315,7 @@ class GuitarProfile(BaseModel):
     @field_validator("param_modes")
     @classmethod
     def merge_default_modes(cls, value: dict[str, ParamMode]) -> dict[str, ParamMode]:
+        """Preenche modos ausentes com `'manual'` para compatibilidade com YAMLs antigos."""
         merged = dict(DEFAULT_PARAM_MODES)
         merged.update(value)
         return merged

@@ -40,10 +40,12 @@ class CalibrationReport:
 
     @property
     def accepted_count(self) -> int:
+        """Quantidade de notas aceitas após filtragem por resíduo e nº de parciais."""
         return sum(1 for s in self.samples if s.accepted)
 
     @property
     def rejected_count(self) -> int:
+        """Quantidade de notas descartadas por baixa qualidade de ajuste."""
         return sum(1 for s in self.samples if not s.accepted)
 
 

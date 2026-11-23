@@ -18,6 +18,11 @@ class FileAudioSource(AudioSource):
         self.channel = channel
 
     def read(self) -> tuple[np.ndarray, int]:
+        """Carrega o arquivo de disco e converte para vetor mono `float64`.
+
+        Returns:
+            Tupla `(audio_mono, sample_rate_hz)`.
+        """
         data, sr = sf.read(str(self.path), dtype="float64", always_2d=True)
         if self.channel is not None and 0 <= self.channel < data.shape[1]:
             mono = data[:, self.channel]

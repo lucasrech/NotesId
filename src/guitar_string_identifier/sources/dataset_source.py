@@ -26,6 +26,14 @@ class EGFxSetLabelProvider(LabelProvider):
         self.tuning = tuning or STANDARD_TUNING
 
     def get_label(self, path: Path) -> GroundTruthLabel | None:
+        """Extrai corda, casa, captador, efeito e nota inferida do caminho do arquivo.
+
+        Args:
+            path: Caminho do arquivo WAV (ex.: `data/egfxset/Clean/Bridge/3-5.wav`).
+
+        Returns:
+            `GroundTruthLabel` preenchido ou `None` se o nome não seguir o padrão.
+        """
         match = _EGFX_FILENAME_RE.match(path.name)
         if not match:
             return None

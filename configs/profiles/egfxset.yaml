@@ -1,3 +1,7 @@
+# Perfil de referência do NotesId para o dataset EGFxSet (Fender Stratocaster).
+# Organizado em 4 blocos: capture (captação), instrument (guitarra),
+# analysis (algoritmos DSP e pesos) e calibration (constantes físicas B0 por corda).
+# Calibrado estritamente nas casas 0 e 12 (nunca nas casas de teste).
 name: egfxset
 description: Perfil inicial para o dataset EGFxSet (Fender Stratocaster, 22 casas,
   afinação padrão E-A-D-G-B-E, escala de 648 mm assumida e editável, áudios limpos

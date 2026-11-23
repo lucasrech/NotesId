@@ -48,6 +48,20 @@ class GaussianStringClassifier(StringClassifier):
         features: Features,
         candidates: list[Candidate],
     ) -> Result:
+        """Ranqueia candidatos `(corda, casa)` por distância de Mahalanobis / Gaussiana.
+
+        Compara `log(B)` medido contra o previsto `log(B0[corda]) + (casa/6)*log(2)`,
+        combinando com decaimento e centroide (baixo peso). Marca `indeterminate=True`
+        quando a confiança ou a margem sobre o 2º colocado ficam abaixo dos limiares.
+
+        Args:
+            note: Nota analisada.
+            features: Características físicas extraídas (`B`, `decay_mean_db_s`, etc.).
+            candidates: Lista de posições compatíveis com `f0`.
+
+        Returns:
+            `Result` com a decisão, confiança (0..1) e ranking ordenado de candidatos.
+        """
         f0 = features.get("f0_refined") or note.f0
         note_name = (
             candidates[0].note

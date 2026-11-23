@@ -1,4 +1,7 @@
-"""Fontes de áudio ao vivo: buffer WebSocket (navegador) e sounddevice opcional."""
+"""Fontes de áudio ao vivo: buffer WebSocket (navegador) e sounddevice opcional.
+
+Glossário de referência: `docs/GLOSSARY.pt-BR.md` (DI vs microfone).
+"""
 
 from __future__ import annotations
 
@@ -6,15 +9,22 @@ import numpy as np
 
 from guitar_string_identifier.core.interfaces import AudioSource
 
+__all__ = ["BufferAudioSource", "SoundDeviceAudioSource"]
+
 
 class BufferAudioSource(AudioSource):
-    """Fonte de áudio em memória alimentada por blocos PCM float32 (ex: Web Audio API)."""
+    """Fonte de áudio em memória alimentada por blocos PCM float32 (ex.: Web Audio API)."""
 
     def __init__(self, samples: np.ndarray, sr: int) -> None:
         self._samples = np.asarray(samples, dtype=np.float64).reshape(-1)
         self._sr = int(sr)
 
     def read(self) -> tuple[np.ndarray, int]:
+        """Retorna uma cópia do buffer mono em `float64` e sua taxa de amostragem (Hz).
+
+        Returns:
+            Tupla `(amostras_mono, sample_rate_hz)`.
+        """
         return self._samples.copy(), self._sr
 
 
@@ -39,6 +49,14 @@ class SoundDeviceAudioSource(AudioSource):
         self.channel = channel
 
     def read(self) -> tuple[np.ndarray, int]:
+        """Grava `duration` segundos da placa de áudio local usando `sounddevice`.
+
+        Returns:
+            Tupla `(audio_mono, sample_rate_hz)`.
+
+        Raises:
+            RuntimeError: Se a biblioteca opcional `sounddevice` não estiver instalada.
+        """
         try:
             import sounddevice as sd  # type: ignore[import-not-found]
         except ImportError as exc:
