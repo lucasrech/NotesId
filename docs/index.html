@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NotesId — Redirecting / Redirecionando</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      text-align: center;
+    }
+    .box {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 28px 36px;
+      max-width: 480px;
+    }
+    h1 { margin: 0 0 8px; }
+    p { color: #94a3b8; margin: 0 0 18px; }
+    .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    a {
+      display: inline-block;
+      padding: 10px 18px;
+      border-radius: 8px;
+      background: #38bdf8;
+      color: #0b1220;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    a.secondary { background: #334155; color: #f1f5f9; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>🎸 NotesId</h1>
+    <p id="msg">Detecting browser language… / Detectando idioma do navegador…</p>
+    <div class="btns">
+      <a href="https://github.com/lucasrech/NotesId/blob/main/README.md">🇺🇸 English</a>
+      <a class="secondary" href="https://github.com/lucasrech/NotesId/blob/main/README.pt-BR.md">🇧🇷 Português</a>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const lang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
+      const target = lang.startsWith("pt")
+        ? "https://github.com/lucasrech/NotesId/blob/main/README.pt-BR.md"
+        : "https://github.com/lucasrech/NotesId/blob/main/README.md";
+      window.location.replace(target);
+    })();
+  </script>
+</body>
+</html>
