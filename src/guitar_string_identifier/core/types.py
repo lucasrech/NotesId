@@ -89,3 +89,5 @@ class Result:
     indeterminate: bool = False
     features: Features | None = None
     label: GroundTruthLabel | None = None
+    input_warning: str | None = None
+    provisional: bool = False

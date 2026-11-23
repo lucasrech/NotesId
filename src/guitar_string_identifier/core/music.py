@@ -98,31 +98,36 @@ def generate_candidates(
     num_frets: int = 22,
     max_cents_error: float = 55.0,
     a4_hz: float = 440.0,
+    tuning_cents_offset: dict[int, float] | None = None,
 ) -> list[Candidate]:
-    """Lista todos os pares (corda, casa) compatíveis com a f0 medida."""
+    """Lista todos os pares (corda, casa) compatíveis com a f0 medida.
+
+    Considera `a4_hz` (referência global) e `tuning_cents_offset` (desvio real
+    medido por corda em cents) para tolerar cordas levemente desafinadas.
+    """
     if f0 <= 0:
         return []
 
     active_tuning = tuning or STANDARD_TUNING
+    offsets = tuning_cents_offset or {}
     midi_float = hz_to_midi(f0, a4_hz=a4_hz)
-    target_midi = round(midi_float)
-    cents_from_nearest = abs(midi_float - target_midi) * 100.0
-    if cents_from_nearest > max_cents_error:
-        return []
-
-    note_name = midi_to_note_name(target_midi)
-    expected_f0 = midi_to_hz(target_midi, a4_hz=a4_hz)
 
     candidates: list[Candidate] = []
     for string_num in sorted(active_tuning.keys()):
         open_midi = note_name_to_midi(active_tuning[string_num])
-        fret = target_midi - open_midi
-        if 0 <= fret <= num_frets:
+        offset_semitones = offsets.get(string_num, 0.0) / 100.0
+        # Casa fracionária considerando o desvio real da corda
+        fret_float = midi_float - (open_midi + offset_semitones)
+        fret = round(fret_float)
+        cents_err = abs(fret_float - fret) * 100.0
+        if 0 <= fret <= num_frets and cents_err <= max_cents_error:
+            target_midi = open_midi + fret
+            expected_f0 = midi_to_hz(target_midi + offset_semitones, a4_hz=a4_hz)
             candidates.append(
                 Candidate(
                     string=string_num,
                     fret=fret,
-                    note=note_name,
+                    note=midi_to_note_name(target_midi),
                     midi=target_midi,
                     expected_f0=expected_f0,
                 )

@@ -130,6 +130,9 @@ class InharmonicityExtractor(FeatureExtractor):
         min_peak_snr_db: float = 12.0,
         min_rel_mag_db: float = -55.0,
         zero_pad_factor: int = 4,
+        hum_notch_freqs_hz: list[float] | None = None,
+        hum_notch_half_width_hz: float = 3.5,
+        iterative_narrowing: bool = False,
     ) -> None:
         self.window_sec = window_sec
         self.transient_ms = transient_ms
@@ -138,8 +141,109 @@ class InharmonicityExtractor(FeatureExtractor):
         self.min_peak_snr_db = min_peak_snr_db
         self.min_rel_mag_db = min_rel_mag_db
         self.zero_pad_factor = zero_pad_factor
+        self.hum_notch_freqs_hz = list(hum_notch_freqs_hz or [])
+        self.hum_notch_half_width_hz = hum_notch_half_width_hz
+        self.iterative_narrowing = iterative_narrowing
 
-    def extract(self, note: Note) -> dict[str, Any]:
+    def _is_in_hum_band(self, freq_hz: float) -> bool:
+        """Retorna True se a frequência cair em uma faixa excluída de ronco (50/60 Hz)."""
+        return any(
+            abs(freq_hz - hum_f) <= self.hum_notch_half_width_hz
+            for hum_f in self.hum_notch_freqs_hz
+        )
+
+    def _search_partials(
+        self,
+        mag_db_rel: np.ndarray,
+        df: float,
+        nyquist: float,
+        f0_init: float,
+        max_partials: int,
+        base_tol_cents: float,
+        f0_seed: float,
+        b_seed: float,
+    ) -> list[PartialInfo]:
+        """Busca progressiva dos parciais n = 1..max_partials excluindo faixas de ronco."""
+        partials: list[PartialInfo] = []
+        f0_running = f0_seed
+        b_running = b_seed
+
+        for n in range(1, max_partials + 1):
+            ideal_freq = n * f0_init
+            pred_freq = n * f0_running * math.sqrt(1.0 + max(0.0, b_running) * (n**2))
+            if pred_freq >= nyquist:
+                break
+
+            tol_cents = base_tol_cents
+            if n >= 4 and len(partials) < 4 and b_seed == 0.0:
+                tol_cents = max(tol_cents, 80.0)
+            f_low = pred_freq * (2.0 ** (-tol_cents / 1200.0))
+            f_high = pred_freq * (2.0 ** (tol_cents / 1200.0))
+
+            idx_low = max(1, int(math.floor(f_low / df)))
+            idx_high = min(mag_db_rel.size - 2, int(math.ceil(f_high / df)))
+            if idx_high <= idx_low:
+                continue
+
+            region = mag_db_rel[idx_low : idx_high + 1]
+            local_max_rel = int(np.argmax(region))
+            peak_idx = idx_low + local_max_rel
+            peak_val = float(mag_db_rel[peak_idx])
+
+            if (
+                mag_db_rel[peak_idx] < mag_db_rel[peak_idx - 1]
+                or mag_db_rel[peak_idx] < mag_db_rel[peak_idx + 1]
+            ):
+                continue
+
+            bg_low = max(1, int(math.floor((pred_freq - 0.35 * f0_init) / df)))
+            bg_high = min(mag_db_rel.size - 1, int(math.ceil((pred_freq + 0.35 * f0_init) / df)))
+            noise_floor = float(np.median(mag_db_rel[bg_low:bg_high]))
+            snr_db = peak_val - noise_floor
+
+            if peak_val < self.min_rel_mag_db or snr_db < self.min_peak_snr_db:
+                continue
+
+            meas_freq, meas_db = _parabolic_peak_freq(mag_db_rel, peak_idx, df)
+            # Exclui picos contaminados por ronco da rede elétrica (50/60 Hz e harmônicos)
+            if self._is_in_hum_band(meas_freq):
+                continue
+
+            dev_cents = freq_to_cents(meas_freq, ideal_freq)
+            partials.append(
+                PartialInfo(
+                    n=n,
+                    ideal_freq=ideal_freq,
+                    measured_freq=meas_freq,
+                    magnitude_db=meas_db,
+                    deviation_cents=dev_cents,
+                )
+            )
+
+            if len(partials) >= 3:
+                ns_tmp = np.array([p.n for p in partials], dtype=np.float64)
+                fs_tmp = np.array([p.measured_freq for p in partials], dtype=np.float64)
+                w_tmp = np.array(
+                    [10.0 ** (p.magnitude_db / 20.0) for p in partials],
+                    dtype=np.float64,
+                )
+                f0_tmp, b_tmp, _, _, _ = _fit_inharmonicity_irls(ns_tmp, fs_tmp, w_tmp, n_iter=3)
+                if 0.0 <= b_tmp <= 0.05 and abs(freq_to_cents(f0_tmp, f0_init)) < 35.0:
+                    f0_running = f0_tmp
+                    b_running = b_tmp
+
+        return partials
+
+    def extract(
+        self,
+        note: Note,
+        *,
+        window_sec: float | None = None,
+        transient_ms: float | None = None,
+        max_partials: int | None = None,
+        peak_tolerance_cents: float | None = None,
+        iterative_narrowing: bool | None = None,
+    ) -> dict[str, Any]:
         if note.f0 is None or note.f0 <= 0:
             return {
                 "B": None,
@@ -154,18 +258,32 @@ class InharmonicityExtractor(FeatureExtractor):
                 "spectrum_db": [],
             }
 
+        eff_window = window_sec if window_sec is not None else self.window_sec
+        eff_transient = transient_ms if transient_ms is not None else self.transient_ms
+        eff_max_partials = max_partials if max_partials is not None else self.max_partials
+        eff_tol = (
+            peak_tolerance_cents
+            if peak_tolerance_cents is not None
+            else self.peak_tolerance_cents
+        )
+        eff_iter = (
+            iterative_narrowing
+            if iterative_narrowing is not None
+            else self.iterative_narrowing
+        )
+
         audio = np.asarray(note.audio, dtype=np.float64)
         sr = note.sr
         f0_init = float(note.f0)
 
-        # Descarta o transiente inicial (~50 ms)
-        start = int(round((self.transient_ms / 1000.0) * sr))
+        # Descarta o transiente inicial
+        start = int(round((eff_transient / 1000.0) * sr))
         if start >= audio.size - 1024:
             start = 0
         steady = audio[start:]
 
-        # Janela longa (>= 0,5 s quando disponível)
-        win_len = min(steady.size, max(int(round(self.window_sec * sr)), int(0.5 * sr)))
+        # Janela longa
+        win_len = min(steady.size, max(int(round(eff_window * sr)), int(0.25 * sr)))
         if win_len > steady.size:
             win_len = steady.size
         seg = steady[:win_len]
@@ -192,76 +310,35 @@ class InharmonicityExtractor(FeatureExtractor):
         df = sr / n_fft
         nyquist = 0.48 * sr
 
-        # Busca progressiva dos parciais n = 1 .. max_partials
-        partials: list[PartialInfo] = []
-        b_running = 0.0
-        f0_running = f0_init
+        # Passo 1: busca progressiva inicial
+        partials = self._search_partials(
+            mag_db_rel, df, nyquist, f0_init, eff_max_partials, eff_tol, f0_init, 0.0
+        )
 
-        for n in range(1, self.max_partials + 1):
-            ideal_freq = n * f0_init
-            # Predição progressiva com o B estimado até o momento
-            pred_freq = n * f0_running * math.sqrt(1.0 + max(0.0, b_running) * (n**2))
-            if pred_freq >= nyquist:
-                break
-
-            # Tolerância de busca em Hz (mais ampla para parciais altos se B ainda não convergiu)
-            tol_cents = self.peak_tolerance_cents
-            if n >= 4 and len(partials) < 4:
-                tol_cents = max(tol_cents, 80.0)
-            f_low = pred_freq * (2.0 ** (-tol_cents / 1200.0))
-            f_high = pred_freq * (2.0 ** (tol_cents / 1200.0))
-
-            idx_low = max(1, int(math.floor(f_low / df)))
-            idx_high = min(mag_db_rel.size - 2, int(math.ceil(f_high / df)))
-            if idx_high <= idx_low:
-                continue
-
-            region = mag_db_rel[idx_low : idx_high + 1]
-            local_max_rel = int(np.argmax(region))
-            peak_idx = idx_low + local_max_rel
-            peak_val = float(mag_db_rel[peak_idx])
-
-            # Verifica se é de fato um pico local (e não borda da janela)
-            if (
-                mag_db_rel[peak_idx] < mag_db_rel[peak_idx - 1]
-                or mag_db_rel[peak_idx] < mag_db_rel[peak_idx + 1]
-            ):
-                continue
-
-            # Estima piso de ruído local em uma faixa mais larga ao redor do parcial
-            bg_low = max(1, int(math.floor((pred_freq - 0.35 * f0_init) / df)))
-            bg_high = min(mag_db_rel.size - 1, int(math.ceil((pred_freq + 0.35 * f0_init) / df)))
-            noise_floor = float(np.median(mag_db_rel[bg_low:bg_high]))
-            snr_db = peak_val - noise_floor
-
-            if peak_val < self.min_rel_mag_db or snr_db < self.min_peak_snr_db:
-                continue
-
-            meas_freq, meas_db = _parabolic_peak_freq(mag_db_rel, peak_idx, df)
-            dev_cents = freq_to_cents(meas_freq, ideal_freq)
-
-            partials.append(
-                PartialInfo(
-                    n=n,
-                    ideal_freq=ideal_freq,
-                    measured_freq=meas_freq,
-                    magnitude_db=meas_db,
-                    deviation_cents=dev_cents,
-                )
-            )
-
-            # Atualiza estimativa progressiva de (f0, B) a partir de 3+ parciais
-            if len(partials) >= 3:
+        # Passos iterativos opcionais (modo auto): estreita a janela de busca conforme B converge
+        if eff_iter and len(partials) >= 3:
+            for narrow_tol in (min(eff_tol, 24.0), min(eff_tol, 15.0)):
                 ns_tmp = np.array([p.n for p in partials], dtype=np.float64)
                 fs_tmp = np.array([p.measured_freq for p in partials], dtype=np.float64)
                 w_tmp = np.array(
-                    [10.0 ** (p.magnitude_db / 20.0) for p in partials],
+                    [max(0.05, 10.0 ** (p.magnitude_db / 40.0)) for p in partials],
                     dtype=np.float64,
                 )
-                f0_tmp, b_tmp, _, _, _ = _fit_inharmonicity_irls(ns_tmp, fs_tmp, w_tmp, n_iter=3)
-                if 0.0 <= b_tmp <= 0.05 and abs(freq_to_cents(f0_tmp, f0_init)) < 35.0:
-                    f0_running = f0_tmp
-                    b_running = b_tmp
+                f0_seed, b_seed, _, _, _ = _fit_inharmonicity_irls(ns_tmp, fs_tmp, w_tmp)
+                if not (0.0 <= b_seed <= 0.05):
+                    break
+                refined = self._search_partials(
+                    mag_db_rel,
+                    df,
+                    nyquist,
+                    f0_init,
+                    eff_max_partials,
+                    narrow_tol,
+                    f0_seed,
+                    b_seed,
+                )
+                if len(refined) >= 3:
+                    partials = refined
 
         # Ajuste final de B
         if len(partials) >= 3:

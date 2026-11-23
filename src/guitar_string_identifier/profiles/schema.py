@@ -1,4 +1,8 @@
-"""Esquema Pydantic para perfis de configuração (captação, instrumento, análise e calibração)."""
+"""Esquema Pydantic para perfis de configuração (captação, instrumento, análise e calibração).
+
+Suporta modo `auto` ou `manual` por parâmetro, mantendo compatibilidade retroativa
+com perfis YAML existentes.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,21 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from guitar_string_identifier.core.music import STANDARD_TUNING, note_name_to_midi
+
+ParamMode = Literal["auto", "manual"]
+
+DEFAULT_PARAM_MODES: dict[str, ParamMode] = {
+    "sample_rate": "manual",
+    "buffer_size": "manual",
+    "reference_gain_db": "manual",
+    "window_sec": "manual",
+    "transient_ms": "manual",
+    "max_partials": "manual",
+    "peak_tolerance_cents": "manual",
+    "min_confidence": "manual",
+    "min_margin": "manual",
+    "weights": "manual",
+}
 
 
 class CaptureConfig(BaseModel):
@@ -24,7 +43,7 @@ class CaptureConfig(BaseModel):
         default=48000,
         ge=8000,
         le=192000,
-        description="Taxa de amostragem esperada em Hz.",
+        description="Taxa de amostragem esperada em Hz (lida da fonte em modo auto).",
     )
     channel: int = Field(
         default=0,
@@ -44,20 +63,44 @@ class CaptureConfig(BaseModel):
         le=65536,
         description="Tamanho do bloco de captura em amostras.",
     )
+    noise_floor_db: float | None = Field(
+        default=None,
+        description="Piso de ruído medido no silêncio (dBFS).",
+    )
+    onset_threshold_db: float = Field(
+        default=-36.0,
+        ge=-90.0,
+        le=-3.0,
+        description="Limiar de detecção de ataque em modo ao vivo contínuo (dBFS).",
+    )
+    rearm_time_sec: float = Field(
+        default=0.35,
+        ge=0.05,
+        le=2.0,
+        description="Tempo mínimo de rearme entre notas para evitar disparos duplos (s).",
+    )
+    hum_freq_hz: float | None = Field(
+        default=None,
+        description="Frequência fundamental de ronco da rede elétrica detectada (50 ou 60 Hz).",
+    )
+    hum_notch_freqs_hz: list[float] = Field(
+        default_factory=list,
+        description="Faixas de frequência de ronco (fundamental e harmônicos) excluídas da busca.",
+    )
 
 
 class StringSpec(BaseModel):
-    """Especificação opcional de uma corda (campos None = 'a estimar')."""
+    """Especificação opcional de uma corda (metadado; campos None = 'a estimar')."""
 
     string_type: Literal["plain", "wound"] | None = Field(
         default=None,
-        description="Tipo da corda: lisa ('plain'), encapada ('wound') ou None (a estimar).",
+        description="Tipo da corda: lisa ('plain'), encapada ('wound') ou None (opcional).",
     )
     gauge_inches: float | None = Field(
         default=None,
         gt=0.005,
         lt=0.100,
-        description="Calibre em polegadas (ex: 0.009) ou None (a estimar).",
+        description="Calibre em polegadas (ex: 0.009) ou None (opcional).",
     )
 
 
@@ -72,6 +115,20 @@ class InstrumentConfig(BaseModel):
         default_factory=lambda: dict(STANDARD_TUNING),
         description="Afinação por corda (1 = mais aguda, 6 = mais grave).",
     )
+    tuning_cents_offset: dict[int, float] = Field(
+        default_factory=dict,
+        description="Desvio real medido em cents de cada corda solta em relação à nota nominal.",
+    )
+    tuning_preset_name: str | None = Field(
+        default=None,
+        description="Nome da afinação detectada ou escolhida (ex: Padrão, Drop D).",
+    )
+    a4_hz: float = Field(
+        default=440.0,
+        ge=415.0,
+        le=466.0,
+        description="Frequência global de referência para Lá4 (A4) em Hz.",
+    )
     num_frets: int = Field(
         default=22,
         ge=12,
@@ -82,11 +139,11 @@ class InstrumentConfig(BaseModel):
         default=648.0,
         ge=500.0,
         le=800.0,
-        description="Comprimento de escala (nut à ponte) em mm.",
+        description="Comprimento de escala em mm (informativo; não estimável pelo áudio).",
     )
     strings: dict[int, StringSpec] = Field(
         default_factory=lambda: {s: StringSpec() for s in range(1, 7)},
-        description="Tipo e calibre por corda (opcional; None = a estimar).",
+        description="Tipo e calibre por corda (metadados opcionais; B0 já cumpre o papel físico).",
     )
     pickup_config: str | None = Field(
         default=None,
@@ -156,6 +213,12 @@ class AnalysisConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Diferença mínima entre 1º e 2º candidato para evitar empate.",
+    )
+    target_error_rate: float = Field(
+        default=0.10,
+        ge=0.01,
+        le=0.50,
+        description="Taxa de erro alvo usada na calibração automática de limiares.",
     )
     weight_inharmonicity: float = Field(
         default=1.0,
@@ -230,6 +293,10 @@ class GuitarProfile(BaseModel):
 
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(default="")
+    param_modes: dict[str, ParamMode] = Field(
+        default_factory=lambda: dict(DEFAULT_PARAM_MODES),
+        description="Modo ('auto' ou 'manual') de cada parâmetro configurável.",
+    )
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
@@ -242,3 +309,14 @@ class GuitarProfile(BaseModel):
         if not cleaned or "/" in cleaned or "\\" in cleaned or ".." in cleaned:
             raise ValueError("Nome de perfil inválido.")
         return cleaned
+
+    @field_validator("param_modes")
+    @classmethod
+    def merge_default_modes(cls, value: dict[str, ParamMode]) -> dict[str, ParamMode]:
+        merged = dict(DEFAULT_PARAM_MODES)
+        merged.update(value)
+        return merged
+
+    def is_auto(self, param: str) -> bool:
+        """Retorna True se o parâmetro estiver configurado como 'auto'."""
+        return self.param_modes.get(param, "manual") == "auto"
