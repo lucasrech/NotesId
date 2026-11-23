@@ -38,6 +38,8 @@ Cada oitava (+12 casas) reduz o comprimento à metade e **quadruplica** o coefic
 
 Essa lei permite calibrar a guitarra medindo $B$ em poucas casas conhecidas (por exemplo, corda solta `k = 0` e casa `k = 12`), estimar $B_0$ por corda e prever $B(k)$ em **todas** as demais casas sem precisar gravar o braço inteiro.
 
+> **Nota sobre o comprimento de escala ($L_0$):** a razão $B(k)/B_0 = 2^{k/6}$ **independe da escala $L_0$**, pois $L_0$ fica inteiramente absorvido na constante calibrada $B_0$ de cada corda. Portanto, o comprimento de escala não é estimável a partir do áudio e o campo `scale_length_mm` no perfil é tratado apenas como **informativo** (assim como tipo e calibre da corda, que são metadados opcionais já representados fisicamente pelo $B_0$ calibrado).
+
 ## 3. Comparação entre cordas diferentes na mesma nota ($f_0$ fixa)
 
 Substituindo $T = 4 L^2 f_0^2 \mu$ na definição de $B$, obtemos a relação para a mesma frequência fundamental $f_0$ tocada em cordas diferentes:

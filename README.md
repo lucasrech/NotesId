@@ -105,7 +105,19 @@ uv run uvicorn guitar_string_identifier.web.app:app --host 0.0.0.0 --port 8000
 
 Acesse no navegador (inclusive no Windows quando rodando no WSL2): **http://localhost:8000**
 
+## Auto Tuning (Configuração Automática)
+
+O botão **⚡ Auto Tuning** (disponível na página principal **Identificar** e em **Configuração & Perfis**) abre um assistente passo a passo que mede o sinal e o instrumento e propõe automaticamente os parâmetros ideais — **sempre pedindo confirmação** (aplicar ao perfil ativo, salvar como novo perfil ou descartar):
+
+- **Modo Ao Vivo (`AudioWorklet`):** classifica placas de captura por heurística + monitoramento de sinal, lê taxa de amostragem real e `baseLatency`, mede 2 s de silêncio (piso de ruído, limiar de ataque e exclusão de ronco 50/60 Hz), avalia nível/clipping, detecta sem cliques a afinação das 6 cordas (incluindo Drop D, Eb, DADGAD e referência global A4) e executa a calibração guiada sem cliques.
+- **Modo Arquivo / Dataset:** pula etapas de hardware, ativa os parâmetros de análise adaptativos (`auto` para janela FFT, descarte do transiente, nº de parciais e estreitamento iterativo de picos) e estima pesos (critério de Fisher) e limiares (validação interna) usando **somente as casas de calibração**.
+- **Limitações transparentes:** ganho físico/Hi-Z da interface, entrada física usada e os *Aprimoramentos de áudio* do Windows não podem ser alterados pelo navegador e são sinalizados com instruções na interface.
+
+Detalhes completos do protocolo REST/WebSocket e das heurísticas em [docs/auto_tuning.md](docs/auto_tuning.md).
+
 ## Documentação
+
+- [docs/auto_tuning.md](docs/auto_tuning.md) — Guia completo do Auto Tuning, protocolo REST/WebSocket e limitações do navegador/WSL.
 
 - [docs/physics.md](docs/physics.md) — Física da corda rígida, lei de inharmonicidade $B$ e características complementares.
 - [docs/architecture.md](docs/architecture.md) — Interfaces, módulos, estrutura real do EGFxSet e captura ao vivo no WSL2.

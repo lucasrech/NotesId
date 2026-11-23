@@ -28,3 +28,10 @@ Este documento registra escolhas de projeto, suposições adotadas diante de amb
 
 ## 7. Protocolo de avaliação com separação estrita por casa
 - **Decisão:** Calibrar o perfil `egfxset` usando **apenas as casas 0 e 12** (espelhando o fluxo da calibração guiada na interface) e avaliar exclusivamente nas **21 casas restantes** (630 arquivos), reportando tanto a acurácia geral quanto a acurácia apenas em notas ambíguas (≥ 2 posições possíveis).
+
+## 8. Auto Tuning: correção de escopo sobre escala e modo `auto`/`manual`
+- **Escala da guitarra (`scale_length_mm`):** a razão $B(\text{casa})/B_0 = 2^{\text{casa}/6}$ independe do comprimento de escala (que fica absorvido em $B_0$ por corda). Por isso `scale_length_mm` é mantido apenas como campo **informativo**; tipo e calibre de corda são metadados opcionais.
+- **AudioWorklet no navegador:** substituímos `ScriptProcessorNode` por `AudioWorkletProcessor` (`pcm-worklet.js`) para captura PCM de baixa latência em thread dedicada.
+- **Modo `auto` vs `manual` por parâmetro:** adicionado `param_modes` ao schema `GuitarProfile` com valores padrão `"manual"` para compatibilidade retroativa total com arquivos YAML existentes.
+- **Proposta não-destrutiva:** o Auto Tuning nunca sobrescreve o perfil ativo automaticamente; gera um diff completo para o usuário aplicar ao perfil ativo, salvar como novo perfil ou descartar.
+- **Sem vazamento de dados:** os pesos das características (`WeightEstimator`, via critério discriminante de Fisher) e os limiares de decisão (`ThresholdCalibrator`, via validação interna leave-one-pickup-out) são estimados exclusivamente sobre as casas de calibração, jamais tocando nas casas de teste.
