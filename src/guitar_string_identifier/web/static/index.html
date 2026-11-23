@@ -17,6 +17,10 @@
     </div>
 
     <div class="topbar-right">
+      <button type="button" class="btn btn-autotune" id="btnOpenAutoTuneTop">
+        ⚡ Auto Tuning
+      </button>
+
       <div class="active-profile-pill" title="Perfil de guitarra atualmente ativo">
         <span class="pill-label">Perfil ativo:</span>
         <strong id="activeProfileBadge">egfxset</strong>
@@ -34,11 +38,16 @@
   <main class="container">
     <!-- ==================== ABA 1: IDENTIFICAR ==================== -->
     <section id="tab-identify" class="tab-panel active">
+      <!-- Alerta de entrada ruim (acorde / clipping) -->
+      <div class="alert-banner hidden" id="inputWarningBanner"></div>
+
       <!-- Quadro grande e central de resultado -->
       <div class="hero-card" id="resultHero">
         <div class="hero-main">
           <div class="hero-note-wrap">
-            <span class="hero-label">Nota tocada</span>
+            <span class="hero-label">
+              Nota tocada <span id="provisionalBadge" class="prov-badge hidden">Refinando...</span>
+            </span>
             <div class="hero-note" id="resNote">—</div>
             <div class="hero-f0" id="resF0">Aguardando áudio...</div>
           </div>
@@ -62,7 +71,7 @@
         <div class="gt-box gt-neutral" id="gtBox">
           <div class="gt-status" id="gtStatus">Sem rótulo para conferir</div>
           <div class="gt-details" id="gtDetails">
-            Selecione um arquivo do EGFxSet ou envie um áudio para analisar.
+            Selecione um arquivo do EGFxSet, envie um áudio ou use o Auto Tuning.
           </div>
         </div>
       </div>
@@ -84,7 +93,7 @@
             <div class="upload-zone" id="uploadZone">
               <input type="file" id="audioFileInput" accept=".wav,.flac,.ogg,.aiff,.aif,audio/*" hidden />
               <p><strong>Arraste um arquivo de áudio</strong> ou clique para selecionar</p>
-              <span class="hint">WAV, FLAC, OGG, AIFF (lido via soundfile)</span>
+              <span class="hint">WAV, FLAC, OGG, AIFF • Modo de nota isolada</span>
             </div>
 
             <div class="divider"><span>ou navegue no dataset EGFxSet local</span></div>
@@ -133,16 +142,23 @@
           <!-- Modo Ao Vivo -->
           <div id="mode-live" class="mode-panel">
             <div class="info-banner">
-              Captura via <strong>Web Audio API</strong> no navegador (com
+              Captura contínua via <strong>AudioWorklet (Web Audio API)</strong> com
               <code>echoCancellation</code>, <code>noiseSuppression</code> e
-              <code>autoGainControl</code> desativados), enviando PCM float32 ao servidor por WebSocket.
+              <code>autoGainControl</code> desativados. <strong>Toque uma nota isolada por vez</strong>
+              (acordes e sinal saturado são rejeitados automaticamente).
+            </div>
+
+            <div class="warn-banner">
+              <strong>Aviso (Windows):</strong> o navegador não consegue desativar os
+              <em>Aprimoramentos de áudio</em> do Windows. Desative em:
+              <code>Configurações → Sistema → Som → Propriedades do dispositivo → Aprimoramentos de áudio → Desativado</code>.
             </div>
 
             <div class="form-group">
               <label for="audioDeviceSelect">Dispositivo de entrada (placa de captura)</label>
               <div class="inline-row">
                 <select id="audioDeviceSelect">
-                  <option value="">Clique em "Atualizar dispositivos"</option>
+                  <option value="">Clique em "Atualizar"</option>
                 </select>
                 <button type="button" class="btn btn-secondary" id="btnRefreshDevices">
                   Atualizar
@@ -153,7 +169,7 @@
 
             <div class="live-controls">
               <button type="button" class="btn btn-primary" id="btnLiveToggle">
-                Iniciar captura
+                Iniciar escuta contínua
               </button>
               <button type="button" class="btn btn-secondary" id="btnLiveAnalyzeNow" disabled>
                 Analisar agora
@@ -172,7 +188,9 @@
               <div class="meter-track">
                 <div class="meter-fill" id="meterFill" style="width: 0%"></div>
               </div>
-              <span class="hint">Toque uma nota isolada e aguarde ~0,8 s para análise automática.</span>
+              <span class="hint">
+                Escuta contínua: primeira estimativa em ~0,3 s, refinada enquanto a nota sustenta.
+              </span>
             </div>
           </div>
         </div>
@@ -236,7 +254,12 @@
       <div class="card">
         <div class="card-header">
           <h2>Gerenciador de Perfis</h2>
-          <span class="hint">Salvos em <code>configs/profiles/&lt;nome&gt;.yaml</code></span>
+          <div class="inline-row">
+            <button type="button" class="btn btn-autotune btn-sm" id="btnOpenAutoTuneConfig">
+              ⚡ Auto Tuning
+            </button>
+            <span class="hint">Salvos em <code>configs/profiles/&lt;nome&gt;.yaml</code></span>
+          </div>
         </div>
 
         <div class="profile-toolbar">
@@ -258,7 +281,7 @@
         <!-- Bloco 1: Captação -->
         <div class="card">
           <h3>1. Captação</h3>
-          <p class="hint">Parâmetros da fonte de áudio e interface de captura.</p>
+          <p class="hint">Clique no selo <code>auto</code>/<code>manual</code> para alternar o controle.</p>
 
           <div class="form-group">
             <label for="cfgSourceMode">Modo padrão de fonte</label>
@@ -277,7 +300,12 @@
 
           <div class="form-row-2">
             <div class="form-group">
-              <label for="cfgSampleRate">Taxa de amostragem (Hz)</label>
+              <label for="cfgSampleRate">
+                <span class="label-with-mode">
+                  Taxa (Hz)
+                  <button type="button" class="mode-pill" data-mode-key="sample_rate">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgSampleRate" min="8000" max="192000" step="1000" required />
             </div>
             <div class="form-group">
@@ -288,34 +316,61 @@
 
           <div class="form-row-2">
             <div class="form-group">
-              <label for="cfgGain">Ganho de referência (dB)</label>
+              <label for="cfgGain">
+                <span class="label-with-mode">
+                  Ganho ref. (dB)
+                  <button type="button" class="mode-pill" data-mode-key="reference_gain_db">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgGain" min="-60" max="60" step="0.5" required />
             </div>
             <div class="form-group">
-              <label for="cfgBufferSize">Tamanho do buffer</label>
+              <label for="cfgBufferSize">
+                <span class="label-with-mode">
+                  Buffer
+                  <button type="button" class="mode-pill" data-mode-key="buffer_size">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgBufferSize" min="256" max="65536" step="256" required />
             </div>
           </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="cfgOnsetDb">Limiar de ataque (dBFS)</label>
+              <input type="number" id="cfgOnsetDb" min="-90" max="-3" step="0.5" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgRearmSec">Rearme entre notas (s)</label>
+              <input type="number" id="cfgRearmSec" min="0.05" max="2.0" step="0.05" required />
+            </div>
+          </div>
+
+          <div class="hint" id="cfgNoiseHumInfo"></div>
         </div>
 
         <!-- Bloco 2: Instrumento -->
         <div class="card">
           <h3>2. Instrumento</h3>
-          <p class="hint">Afinação, escala e encordoamento (campos vazios = "a estimar").</p>
+          <p class="hint">Escala é informativa (absorvida em B₀). Tipo/calibre são metadados opcionais.</p>
 
           <div class="form-group">
             <label for="cfgModelName">Modelo do instrumento</label>
             <input type="text" id="cfgModelName" required />
           </div>
 
-          <div class="form-row-2">
+          <div class="form-row-3">
             <div class="form-group">
-              <label for="cfgNumFrets">Número de casas</label>
+              <label for="cfgNumFrets">Casas</label>
               <input type="number" id="cfgNumFrets" min="12" max="27" required />
             </div>
             <div class="form-group">
-              <label for="cfgScaleMm">Escala (mm)</label>
+              <label for="cfgScaleMm">Escala mm <span class="badge-est">info</span></label>
               <input type="number" id="cfgScaleMm" min="500" max="800" step="0.5" required />
+            </div>
+            <div class="form-group">
+              <label for="cfgA4Hz">Ref. A4 (Hz)</label>
+              <input type="number" id="cfgA4Hz" min="415" max="466" step="0.1" required />
             </div>
           </div>
 
@@ -330,8 +385,8 @@
                 <tr>
                   <th>Corda</th>
                   <th>Afinação</th>
-                  <th>Tipo <span class="badge-est">a estimar</span></th>
-                  <th>Calibre (pol.) <span class="badge-est">a estimar</span></th>
+                  <th>Tipo <span class="badge-est">opc.</span></th>
+                  <th>Calibre <span class="badge-est">opc.</span></th>
                 </tr>
               </thead>
               <tbody id="cfgStringsBody"></tbody>
@@ -342,52 +397,88 @@
         <!-- Bloco 3: Análise -->
         <div class="card">
           <h3>3. Análise &amp; Classificador</h3>
-          <p class="hint">Parâmetros de FFT, busca de parciais, confiança e pesos.</p>
+          <p class="hint">Parâmetros em <code>auto</code> adaptam-se automaticamente a cada nota.</p>
 
           <div class="form-row-2">
             <div class="form-group">
-              <label for="cfgWindowSec">Janela FFT (s)</label>
+              <label for="cfgWindowSec">
+                <span class="label-with-mode">
+                  Janela FFT (s)
+                  <button type="button" class="mode-pill" data-mode-key="window_sec">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgWindowSec" min="0.2" max="3.0" step="0.05" required />
             </div>
             <div class="form-group">
-              <label for="cfgTransientMs">Descarte transiente (ms)</label>
+              <label for="cfgTransientMs">
+                <span class="label-with-mode">
+                  Transiente (ms)
+                  <button type="button" class="mode-pill" data-mode-key="transient_ms">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgTransientMs" min="0" max="300" step="5" required />
             </div>
           </div>
 
           <div class="form-row-2">
             <div class="form-group">
-              <label for="cfgMaxPartials">Nº máximo de parciais</label>
+              <label for="cfgMaxPartials">
+                <span class="label-with-mode">
+                  Nº parciais
+                  <button type="button" class="mode-pill" data-mode-key="max_partials">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgMaxPartials" min="4" max="25" required />
             </div>
             <div class="form-group">
-              <label for="cfgPeakTol">Tolerância de picos (cents)</label>
+              <label for="cfgPeakTol">
+                <span class="label-with-mode">
+                  Tolerância (c)
+                  <button type="button" class="mode-pill" data-mode-key="peak_tolerance_cents">manual</button>
+                </span>
+              </label>
               <input type="number" id="cfgPeakTol" min="5" max="120" step="1" required />
             </div>
           </div>
 
           <div class="form-row-2">
             <div class="form-group">
-              <label for="cfgMinConf">Confiança mínima</label>
-              <input type="number" id="cfgMinConf" min="0" max="1" step="0.05" required />
+              <label for="cfgMinConf">
+                <span class="label-with-mode">
+                  Confiança mín.
+                  <button type="button" class="mode-pill" data-mode-key="min_confidence">manual</button>
+                </span>
+              </label>
+              <input type="number" id="cfgMinConf" min="0" max="1" step="0.01" required />
             </div>
             <div class="form-group">
-              <label for="cfgMinMargin">Margem mínima (empate)</label>
-              <input type="number" id="cfgMinMargin" min="0" max="1" step="0.02" required />
+              <label for="cfgMinMargin">
+                <span class="label-with-mode">
+                  Margem empate
+                  <button type="button" class="mode-pill" data-mode-key="min_margin">manual</button>
+                </span>
+              </label>
+              <input type="number" id="cfgMinMargin" min="0" max="1" step="0.01" required />
             </div>
           </div>
 
+          <div class="form-group" style="margin-bottom:6px">
+            <span class="label-with-mode" style="font-size:0.82rem;color:var(--muted)">
+              Pesos das características
+              <button type="button" class="mode-pill" data-mode-key="weights">manual</button>
+            </span>
+          </div>
           <div class="form-row-3">
             <div class="form-group">
               <label for="cfgWeightB">Peso B</label>
               <input type="number" id="cfgWeightB" min="0" max="10" step="0.05" required />
             </div>
             <div class="form-group">
-              <label for="cfgWeightDecay">Peso decaimento</label>
+              <label for="cfgWeightDecay">Decaimento</label>
               <input type="number" id="cfgWeightDecay" min="0" max="5" step="0.05" required />
             </div>
             <div class="form-group">
-              <label for="cfgWeightSpec">Peso espectral</label>
+              <label for="cfgWeightSpec">Espectral</label>
               <input type="number" id="cfgWeightSpec" min="0" max="2" step="0.01" required />
             </div>
           </div>
@@ -442,6 +533,201 @@
       </div>
     </section>
   </main>
+
+  <!-- ==================== MODAL ASSISTENTE AUTO TUNING ==================== -->
+  <div class="modal-backdrop hidden" id="autotuneModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2>⚡ Auto Tuning — Configuração Automática</h2>
+          <p class="hint">
+            Mede sinal e instrumento para propor o perfil ideal sem sobrescrever nada sem sua confirmação.
+          </p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnCloseAutoTune">✕ Fechar</button>
+      </div>
+
+      <!-- Barra de progresso e etapas -->
+      <div class="wizard-steps" id="wizardStepsBar">
+        <div class="w-step active" data-wstep="1"><span class="w-icon">○</span> 1. Fonte &amp; Placa</div>
+        <div class="w-step" data-wstep="2"><span class="w-icon">○</span> 2. Silêncio &amp; Ronco</div>
+        <div class="w-step" data-wstep="3"><span class="w-icon">○</span> 3. Nível &amp; Clipping</div>
+        <div class="w-step" data-wstep="4"><span class="w-icon">○</span> 4. Afinação (6 cordas)</div>
+        <div class="w-step" data-wstep="5"><span class="w-icon">○</span> 5. Calibração</div>
+        <div class="w-step" data-wstep="6"><span class="w-icon">○</span> 6. Resumo</div>
+      </div>
+
+      <div class="wizard-body">
+        <!-- ETAPA 1: FONTE E PLACA -->
+        <div class="w-panel active" id="wPanel-1">
+          <h3>Etapa 1: Escolha o modo de Auto Tuning</h3>
+          <div class="mode-cards">
+            <label class="mode-card">
+              <input type="radio" name="atMode" value="live" checked />
+              <div>
+                <strong>Ao vivo (placa de captura)</strong>
+                <p class="hint">Detecta placa, taxa real, ruído, ronco 60 Hz, nível, afinação e B₀ com sua guitarra.</p>
+              </div>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="atMode" value="dataset" />
+              <div>
+                <strong>Arquivo / Dataset (EGFxSet)</strong>
+                <p class="hint">Pula etapas de hardware; calibra afinação, B₀, pesos (Fisher), limiares e análise adaptativa nas casas 0 e 12.</p>
+              </div>
+            </label>
+          </div>
+
+          <div id="atLiveDeviceBox">
+            <div class="warn-banner" style="margin-top:12px">
+              <strong>Lembrete (Windows):</strong> desative os <em>Aprimoramentos de áudio</em> em
+              <code>Configurações → Sistema → Som → Propriedades do dispositivo</code>.
+              Ganho físico e chave Hi-Z continuam controlados manualmente na sua placa.
+            </div>
+            <div class="form-group" style="margin-top:12px">
+              <label for="atDeviceSelect">Placa de captura sugerida (ordenada por heurística)</label>
+              <div class="inline-row">
+                <select id="atDeviceSelect"></select>
+                <button type="button" class="btn btn-secondary" id="btnAtRefreshDevices">Detectar placas</button>
+              </div>
+            </div>
+            <div class="meter-card">
+              <div class="meter-header">
+                <span>Monitor de entrada (toque uma corda para confirmar o sinal)</span>
+                <strong id="atMonitorDb">-∞ dB</strong>
+              </div>
+              <div class="meter-track"><div class="meter-fill" id="atMonitorFill" style="width:0%"></div></div>
+              <span class="hint" id="atDeviceMeta">Aguardando monitoramento...</span>
+            </div>
+          </div>
+
+          <div id="atDatasetBox" class="hidden" style="margin-top:14px">
+            <div class="info-banner">
+              O Auto Tuning no dataset usa <strong>apenas as casas de calibração (0 e 12)</strong>,
+              garantindo que as 21 casas de teste nunca sejam contaminadas.
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="atTargetError">Taxa de erro alvo para limiares (ex: 0.10 = 10%)</label>
+                <input type="number" id="atTargetError" value="0.10" min="0.01" max="0.40" step="0.01" />
+              </div>
+              <div class="form-group">
+                <label for="atCalFrets">Casas de calibração (separadas por espaço)</label>
+                <input type="text" id="atCalFrets" value="0 12" />
+              </div>
+            </div>
+          </div>
+
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-primary" id="btnAtStep1Next">Continuar →</button>
+          </div>
+        </div>
+
+        <!-- ETAPA 2: SILÊNCIO E RONCO -->
+        <div class="w-panel" id="wPanel-2">
+          <h3>Etapa 2: Silêncio (Piso de ruído e ronco 50/60 Hz)</h3>
+          <p class="hint">Deixe o volume da guitarra aberto, mas <strong>não toque nas cordas</strong> durante 2 segundos.</p>
+          <div class="wizard-center-box">
+            <button type="button" class="btn btn-primary" id="btnAtCaptureSilence">
+              Medir 2 segundos de silêncio
+            </button>
+            <div id="atSilenceResult" class="at-result-box hidden"></div>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-ghost" data-wgoto="1">← Voltar</button>
+            <button type="button" class="btn btn-primary" id="btnAtStep2Next" disabled>Próximo: Nível →</button>
+          </div>
+        </div>
+
+        <!-- ETAPA 3: NÍVEL E CLIPPING -->
+        <div class="w-panel" id="wPanel-3">
+          <h3>Etapa 3: Nível e Clipping</h3>
+          <p class="hint">Toque uma nota forte (ex: corda 6 solta com palhetada firme) durante 1,5 segundo.</p>
+          <div class="wizard-center-box">
+            <button type="button" class="btn btn-primary" id="btnAtCaptureLevel">
+              Medir nota forte (1,5 s)
+            </button>
+            <div id="atLevelResult" class="at-result-box hidden"></div>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-ghost" data-wgoto="2">← Voltar</button>
+            <button type="button" class="btn btn-primary" id="btnAtStep3Next" disabled>Próximo: Afinação →</button>
+          </div>
+        </div>
+
+        <!-- ETAPA 4: AFINAÇÃO DAS 6 CORDAS (SEM CLIQUES) -->
+        <div class="w-panel" id="wPanel-4">
+          <h3>Etapa 4: Afinação das 6 cordas soltas (detecção automática)</h3>
+          <p class="hint">
+            Toque cada corda solta quando pedido — o assistente detecta a nota sozinho e avança sem precisar clicar.
+          </p>
+          <div class="at-prompt-box" id="atTuningPrompt">
+            Clique em "Iniciar detecção automática" e toque a Corda 6 solta.
+          </div>
+          <div class="inline-row" style="margin:10px 0">
+            <button type="button" class="btn btn-primary" id="btnAtStartTuning">Iniciar detecção automática</button>
+            <button type="button" class="btn btn-secondary" id="btnAtRepeatTuning" disabled>Repetir corda atual</button>
+          </div>
+          <div id="atTuningTableWrap"></div>
+          <div id="atTuningPresetBanner" class="info-banner hidden" style="margin-top:10px"></div>
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-ghost" data-wgoto="3">← Voltar</button>
+            <button type="button" class="btn btn-primary" id="btnAtStep4Next">Próximo: Calibração →</button>
+          </div>
+        </div>
+
+        <!-- ETAPA 5: CALIBRAÇÃO GUIADA SEM CLIQUES (OPCIONAL) -->
+        <div class="w-panel" id="wPanel-5">
+          <h3>Etapa 5: Calibração guiada sem cliques (opcional, recomendada)</h3>
+          <p class="hint">
+            Toque cada corda solta e na casa 12. O sistema avança sozinho ao detectar a nota certa e rejeita notas com resíduo alto.
+          </p>
+          <div class="at-prompt-box" id="atCalPrompt">
+            Clique em "Iniciar calibração automática" ou pule para o resumo.
+          </div>
+          <div class="inline-row" style="margin:10px 0">
+            <button type="button" class="btn btn-primary" id="btnAtStartCal">Iniciar calibração automática</button>
+            <button type="button" class="btn btn-secondary" id="btnAtRepeatCal" disabled>Repetir nota atual</button>
+          </div>
+          <div id="atCalProgressList" class="at-cal-grid"></div>
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-ghost" data-wgoto="4">← Voltar</button>
+            <button type="button" class="btn btn-primary" id="btnAtStep5Next">Ver Resumo e Proposta →</button>
+          </div>
+        </div>
+
+        <!-- ETAPA 6: RESUMO E CONFIRMAÇÃO -->
+        <div class="w-panel" id="wPanel-6">
+          <h3>Etapa 6: Resumo das Mudanças Propostas</h3>
+          <p class="hint">Revise os valores atuais vs propostos. Nada foi gravado ainda.</p>
+
+          <div id="atWarningsBox" class="warn-banner hidden" style="margin:10px 0"></div>
+
+          <div class="cal-table-wrap" style="max-height:310px;overflow-y:auto;margin:12px 0">
+            <table class="cal-table">
+              <thead>
+                <tr>
+                  <th>Parâmetro</th>
+                  <th>Valor atual</th>
+                  <th>Valor proposto</th>
+                  <th>Como foi obtido</th>
+                </tr>
+              </thead>
+              <tbody id="atSummaryTableBody"></tbody>
+            </table>
+          </div>
+
+          <div class="wizard-actions">
+            <button type="button" class="btn btn-ghost" id="btnAtDiscard">Descartar</button>
+            <div class="inline-row">
+              <button type="button" class="btn btn-secondary" id="btnAtSaveAsNew">Salvar como novo perfil</button>
+              <button type="button" class="btn btn-primary" id="btnAtApplyActive">Aplicar ao perfil ativo</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

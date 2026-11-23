@@ -78,7 +78,7 @@ class AutoTuneSession:
         self.threshold_calibrator = ThresholdCalibrator()
 
         self.tuning_measurements: dict[int, StringTuningMeasurement] = {}
-        self.calibration_samples: dict[tuple[int, int], CalibrationSampleResult] = {}
+        self.calibration_samples: dict[tuple[int, int, str], CalibrationSampleResult] = {}
         self.reasons: dict[str, str] = {}
         self.warnings: list[str] = []
         self.step_statuses: dict[str, str] = {
@@ -277,12 +277,13 @@ class AutoTuneSession:
         fret: int,
         audio: np.ndarray,
         sr: int,
+        sample_key: str = "default",
     ) -> dict[str, Any]:
         """Etapa 5: mede uma nota de calibração (com rejeição automática por resíduo)."""
         calibrator = GuitarCalibrator(analysis_config=self.proposed.analysis)
         sample = calibrator.measure_sample(Note(audio=audio, sr=sr), string, fret)
         if sample.accepted:
-            self.calibration_samples[(string, fret)] = sample
+            self.calibration_samples[(string, fret, sample_key)] = sample
             self._consolidate_calibration()
         return {
             "string": sample.string,

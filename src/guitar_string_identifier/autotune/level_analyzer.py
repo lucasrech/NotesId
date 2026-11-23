@@ -141,7 +141,7 @@ class LevelAnalyzer:
 
         # 2. Clipping severo
         clipped_ratio = float(np.sum(abs_sig >= self.clip_threshold)) / sig.size
-        if clipped_ratio > 0.005:
+        if clipped_ratio > self.max_clipped_ratio or (clipped_ratio > 0.0005 and peak >= 0.995):
             return InputQualityResult(
                 ok=False,
                 is_clipping=True,

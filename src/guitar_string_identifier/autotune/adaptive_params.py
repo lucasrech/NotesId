@@ -95,27 +95,25 @@ class AdaptiveParams:
         self,
         f0: float,
         sustain_sec: float,
-        min_sec: float = 0.35,
-        max_sec: float = 1.2,
+        min_sec: float = 0.55,
+        max_sec: float = 1.0,
     ) -> float:
         """Escolhe janela FFT a partir da f0 e do sustain disponível.
 
-        Notas graves exigem janela mais longa (~55 ciclos) para resolver bem
-        os parciais próximos; notas agudas podem usar janela menor para evitar
-        incluir a cauda ruidosa do decaimento rápido.
+        Garante janela longa (>= 0,55 s quando há sustain) para alta resolução
+        na estimativa de B, estendendo até 1,0 s em notas graves (E2/A2).
         """
-        # ~55 ciclos de f0: E2 (82 Hz) -> ~0.67 s; A2 (110 Hz) -> 0.50 s; E4 (330 Hz) -> 0.35 s
-        cycles_target = 60.0 / max(f0, 65.0)
+        cycles_target = 80.0 / max(f0, 65.0)
         ideal = float(np.clip(cycles_target, min_sec, max_sec))
-        # Não excede o sustain útil disponível (mas garante ao menos 0.25 s se existir)
-        usable = max(0.25, min(ideal, sustain_sec))
+        # Não excede o sustain útil disponível (mas garante ao menos 0,30 s se existir)
+        usable = max(0.30, min(ideal, sustain_sec))
         return round(usable, 3)
 
     def resolve_max_partials(
         self,
         f0: float,
         sr: int,
-        cap: int = 18,
+        cap: int = 12,
     ) -> int:
         """Determina o limite superior de parciais abaixo de Nyquist (0,45 * sr)."""
         if f0 <= 0:

@@ -9,12 +9,30 @@ const state = {
     running: false,
     audioCtx: null,
     stream: null,
-    processor: null,
+    workletNode: null,
     ws: null,
   },
   calibration: {
     steps: [],
     results: {},
+  },
+  autotune: {
+    sessionId: null,
+    mode: "live",
+    step: 1,
+    audioCtx: null,
+    stream: null,
+    workletNode: null,
+    ws: null,
+    sampleRate: 48000,
+    baseLatency: null,
+    tuningOrder: [6, 5, 4, 3, 2, 1],
+    tuningIdx: 0,
+    tuningResults: {},
+    calQueue: [],
+    calIdx: 0,
+    calResults: {},
+    proposal: null,
   },
 };
 
@@ -32,6 +50,80 @@ async function api(url, opts = {}) {
     throw new Error(detail);
   }
   return res.json();
+}
+
+/* ==================== HELPER: AUDIOWORKLET CAPTURE ==================== */
+async function startWorkletCapture(deviceId, chunkSize, onChunk) {
+  const constraints = {
+    audio: {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: { ideal: 2 },
+      sampleRate: { ideal: 96000 },
+    },
+  };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const track = stream.getAudioTracks()[0];
+  const settings = track && track.getSettings ? track.getSettings() : {};
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  await audioCtx.audioWorklet.addModule("/static/pcm-worklet.js");
+
+  const source = audioCtx.createMediaStreamSource(stream);
+  const workletNode = new AudioWorkletNode(audioCtx, "pcm-capture-processor", {
+    processorOptions: { chunkSize: chunkSize || 2048, channelIndex: 0 },
+  });
+  workletNode.port.onmessage = (ev) => {
+    if (onChunk) onChunk(new Float32Array(ev.data));
+  };
+  source.connect(workletNode);
+  // Conecta a um nó silencioso para manter o grafo ativo sem microfonia
+  const silentGain = audioCtx.createGain();
+  silentGain.gain.value = 0;
+  workletNode.connect(silentGain);
+  silentGain.connect(audioCtx.destination);
+
+  return {
+    stream,
+    audioCtx,
+    workletNode,
+    sampleRate: settings.sampleRate || audioCtx.sampleRate,
+    baseLatency: typeof audioCtx.baseLatency === "number" ? audioCtx.baseLatency : null,
+  };
+}
+
+async function captureFixedDurationWorklet(deviceId, durationSec) {
+  const chunks = [];
+  let collected = 0;
+  let targetSamples = 48000;
+  let resolveDone;
+  const donePromise = new Promise((res) => {
+    resolveDone = res;
+  });
+
+  const cap = await startWorkletCapture(deviceId, 2048, (arr) => {
+    chunks.push(arr);
+    collected += arr.length;
+    if (collected >= targetSamples) {
+      resolveDone();
+    }
+  });
+  targetSamples = Math.round(durationSec * cap.sampleRate);
+  await donePromise;
+
+  cap.workletNode.disconnect();
+  cap.stream.getTracks().forEach((t) => t.stop());
+  await cap.audioCtx.close();
+
+  const merged = new Float32Array(collected);
+  let off = 0;
+  chunks.forEach((c) => {
+    merged.set(c, off);
+    off += c.length;
+  });
+  return { samples: merged, sampleRate: cap.sampleRate };
 }
 
 /* ==================== NAVEGAÇÃO ==================== */
@@ -55,7 +147,7 @@ function initTabs() {
       btn.classList.add("active");
       $(`#mode-${btn.dataset.mode}`).classList.add("active");
       if (btn.dataset.mode === "live") {
-        refreshAudioDevices();
+        refreshAudioDevices("#audioDeviceSelect");
       }
     });
   });
@@ -63,12 +155,24 @@ function initTabs() {
 
 /* ==================== EXIBIÇÃO DE RESULTADO ==================== */
 function renderResult(data) {
+  const warnBanner = $("#inputWarningBanner");
+  if (data.input_warning) {
+    warnBanner.textContent = `⚠ ${data.input_warning}`;
+    warnBanner.classList.remove("hidden");
+  } else {
+    warnBanner.classList.add("hidden");
+  }
+
+  $("#provisionalBadge").classList.toggle("hidden", !data.provisional);
+
   $("#resNote").textContent = data.note || "?";
   $("#resF0").textContent = data.f0
     ? `f0 medida: ${data.f0.toFixed(2)} Hz`
     : "Frequência fundamental não detectada";
 
-  if (data.indeterminate || data.string === null || data.fret === null) {
+  if (data.input_warning) {
+    $("#resPosition").textContent = "Entrada rejeitada";
+  } else if (data.indeterminate || data.string === null || data.fret === null) {
     $("#resPosition").textContent = "Indeterminado";
   } else {
     $("#resPosition").textContent = `Corda ${data.string} • Casa ${data.fret}`;
@@ -113,7 +217,7 @@ function renderResult(data) {
     gtDetails.textContent = `Esperado: ${expPos} (${lbl.note})${pickupTxt}  |  Obtido: ${gotPos} (${data.note})`;
   }
 
-  // Lista de candidatos
+  // Candidatos
   const cList = $("#candidatesList");
   if (!data.candidates || data.candidates.length === 0) {
     cList.innerHTML = `<p class="muted">Nenhum candidato compatível com f0.</p>`;
@@ -187,15 +291,14 @@ function drawSpectrum(spectrum, partials) {
   const padB = 34;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-
   const maxF = freqs[freqs.length - 1];
   const minDb = -75;
   const maxDb = 5;
 
   const xOf = (f) => padL + (f / maxF) * plotW;
-  const yOf = (db) => padT + (1 - (Math.max(minDb, Math.min(maxDb, db)) - minDb) / (maxDb - minDb)) * plotH;
+  const yOf = (db) =>
+    padT + (1 - (Math.max(minDb, Math.min(maxDb, db)) - minDb) / (maxDb - minDb)) * plotH;
 
-  // Grade horizontal
   ctx.strokeStyle = "rgba(148,163,184,0.16)";
   ctx.lineWidth = 1;
   ctx.font = "11px sans-serif";
@@ -209,7 +312,6 @@ function drawSpectrum(spectrum, partials) {
     ctx.fillText(`${db} dB`, 6, y + 4);
   }
 
-  // Harmônicos ideais (linhas tracejadas)
   ctx.save();
   ctx.setLineDash([4, 4]);
   ctx.strokeStyle = "rgba(148,163,184,0.45)";
@@ -222,7 +324,6 @@ function drawSpectrum(spectrum, partials) {
   });
   ctx.restore();
 
-  // Curva do espectro
   ctx.strokeStyle = "#38bdf8";
   ctx.lineWidth = 1.6;
   ctx.beginPath();
@@ -234,7 +335,6 @@ function drawSpectrum(spectrum, partials) {
   }
   ctx.stroke();
 
-  // Pontos dos parciais medidos
   partials.forEach((p) => {
     const x = xOf(p.measured_freq);
     const y = yOf(p.magnitude_db);
@@ -245,10 +345,13 @@ function drawSpectrum(spectrum, partials) {
     ctx.fillStyle = "#fef3c7";
     ctx.font = "10px sans-serif";
     const sign = p.deviation_cents >= 0 ? "+" : "";
-    ctx.fillText(`n=${p.n} (${sign}${p.deviation_cents.toFixed(1)}c)`, x - 18, Math.max(padT + 10, y - 9));
+    ctx.fillText(
+      `n=${p.n} (${sign}${p.deviation_cents.toFixed(1)}c)`,
+      x - 18,
+      Math.max(padT + 10, y - 9)
+    );
   });
 
-  // Eixo X (frequência)
   ctx.fillStyle = "#94a3b8";
   ctx.font = "11px sans-serif";
   for (let k = 0; k <= 6; k++) {
@@ -272,7 +375,6 @@ async function loadDatasetFiles() {
   const data = await api(`/api/dataset/files?${params.toString()}`);
   state.datasetFiles = data.files || [];
 
-  // Popula dropdown de captadores apenas na primeira vez
   const pkSel = $("#filterPickup");
   if (pkSel.options.length <= 1 && data.pickups && data.pickups.length) {
     data.pickups.forEach((pk) => {
@@ -282,7 +384,6 @@ async function loadDatasetFiles() {
       pkSel.appendChild(opt);
     });
   }
-
   renderDatasetList(state.datasetFiles, data.available);
 }
 
@@ -290,14 +391,13 @@ function renderDatasetList(files, available = true) {
   const list = $("#datasetList");
   $("#datasetCount").textContent = `${files.length} arquivos`;
   if (!available) {
-    list.innerHTML = `<p class="muted" style="padding:12px">Dataset EGFxSet não encontrado em <code>data/egfxset/Clean</code>. Rode <code>uv run python scripts/download_egfxset.py</code>.</p>`;
+    list.innerHTML = `<p class="muted" style="padding:12px">Dataset EGFxSet não encontrado em <code>data/egfxset/Clean</code>.</p>`;
     return;
   }
   if (!files.length) {
     list.innerHTML = `<p class="muted" style="padding:12px">Nenhum arquivo corresponde aos filtros.</p>`;
     return;
   }
-
   list.innerHTML = files
     .slice(0, 200)
     .map(
@@ -337,7 +437,6 @@ function renderDatasetList(files, available = true) {
 function initFileAndDataset() {
   const zone = $("#uploadZone");
   const input = $("#audioFileInput");
-
   zone.addEventListener("click", () => input.click());
   zone.addEventListener("dragover", (e) => {
     e.preventDefault();
@@ -356,14 +455,12 @@ function initFileAndDataset() {
   ["#filterPickup", "#filterString", "#filterFret"].forEach((sel) => {
     $(sel).addEventListener("change", loadDatasetFiles);
   });
-
   $("#btnClearFilters").addEventListener("click", () => {
     $("#filterPickup").value = "";
     $("#filterString").value = "";
     $("#filterFret").value = "";
     loadDatasetFiles();
   });
-
   $("#btnShowC4").addEventListener("click", async () => {
     const data = await api("/api/dataset/files");
     const c4Only = (data.files || []).filter((f) => f.note === "C4");
@@ -383,32 +480,52 @@ async function uploadAndAnalyze(file) {
   }
 }
 
-/* ==================== CAPTURA AO VIVO (WEB AUDIO API) ==================== */
-async function refreshAudioDevices() {
-  const sel = $("#audioDeviceSelect");
+/* ==================== DISPOSITIVOS E CAPTURA AO VIVO (AUDIOWORKLET) ==================== */
+async function refreshAudioDevices(selectCss = "#audioDeviceSelect") {
+  const sel = $(selectCss);
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
     sel.innerHTML = `<option value="">Web Audio API indisponível neste navegador</option>`;
-    return;
+    return [];
   }
   try {
-    // Pede permissão breve para revelar os nomes reais das placas de captura
     const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
     tmp.getTracks().forEach((t) => t.stop());
   } catch (_) {}
 
   const devices = await navigator.mediaDevices.enumerateDevices();
-  const inputs = devices.filter((d) => d.kind === "audioinput");
-  sel.innerHTML = "";
+  const inputs = devices
+    .filter((d) => d.kind === "audioinput")
+    .map((d) => ({ deviceId: d.deviceId, label: d.label || "" }));
+
   if (!inputs.length) {
     sel.innerHTML = `<option value="">Nenhuma entrada de áudio detectada</option>`;
-    return;
+    return [];
   }
-  inputs.forEach((dev, idx) => {
+
+  // Classifica pela heurística do backend (DeviceProbe)
+  let ranked = inputs.map((d, i) => ({
+    device_id: d.deviceId,
+    label: d.label || `Entrada #${i + 1}`,
+    score: 0,
+    reason: "",
+  }));
+  try {
+    const resp = await api("/api/autotune/rank-devices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ devices: inputs }),
+    });
+    ranked = resp.devices || ranked;
+  } catch (_) {}
+
+  sel.innerHTML = "";
+  ranked.forEach((dev) => {
     const opt = document.createElement("option");
-    opt.value = dev.deviceId;
-    opt.textContent = dev.label || `Entrada de áudio #${idx + 1}`;
+    opt.value = dev.device_id;
+    opt.textContent = dev.score > 0 ? `★ ${dev.label} (sugerida)` : dev.label;
     sel.appendChild(opt);
   });
+  return ranked;
 }
 
 async function toggleLiveCapture() {
@@ -417,38 +534,29 @@ async function toggleLiveCapture() {
     return;
   }
   const deviceId = $("#audioDeviceSelect").value;
-  const constraints = {
-    audio: {
-      deviceId: deviceId ? { exact: deviceId } : undefined,
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      channelCount: 1,
-      sampleRate: { ideal: 96000 },
-    },
-  };
-
   try {
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AudioCtx();
-    const actualSr = audioCtx.sampleRate;
-    $("#liveSampleRateInfo").textContent = `Taxa real obtida: ${actualSr} Hz`;
-
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${wsProto}://${location.host}/ws/live`);
     ws.binaryType = "arraybuffer";
+
+    const cap = await startWorkletCapture(deviceId, 2048, (floatChunk) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(floatChunk.buffer);
+      }
+    });
+
+    $("#liveSampleRateInfo").textContent = `Taxa real obtida: ${cap.sampleRate} Hz (AudioWorklet)`;
 
     ws.onopen = () => {
       ws.send(
         JSON.stringify({
           type: "config",
-          sample_rate: actualSr,
+          sample_rate: cap.sampleRate,
           profile: state.activeProfile,
         })
       );
-      $("#liveStatus").textContent = `Capturando (${actualSr} Hz)...`;
-      $("#btnLiveToggle").textContent = "Parar captura";
+      $("#liveStatus").textContent = `Escutando (${cap.sampleRate} Hz)...`;
+      $("#btnLiveToggle").textContent = "Parar escuta";
       $("#btnLiveAnalyzeNow").disabled = false;
     };
 
@@ -468,38 +576,63 @@ async function toggleLiveCapture() {
       if (state.live.running) stopLiveCapture();
     };
 
-    const source = audioCtx.createMediaStreamSource(stream);
-    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        const inputData = e.inputBuffer.getChannelData(0);
-        ws.send(new Float32Array(inputData).buffer);
-      }
+    state.live = {
+      running: true,
+      audioCtx: cap.audioCtx,
+      stream: cap.stream,
+      workletNode: cap.workletNode,
+      ws,
     };
-    source.connect(processor);
-    processor.connect(audioCtx.destination);
-
-    state.live = { running: true, audioCtx, stream, processor, ws };
   } catch (err) {
-    alert(`Erro ao iniciar captura ao vivo: ${err.message}`);
+    alert(`Erro ao iniciar captura ao vivo (AudioWorklet): ${err.message}`);
   }
 }
 
 function stopLiveCapture() {
   const l = state.live;
-  if (l.processor) l.processor.disconnect();
+  if (l.workletNode) l.workletNode.disconnect();
   if (l.audioCtx) l.audioCtx.close();
   if (l.stream) l.stream.getTracks().forEach((t) => t.stop());
   if (l.ws && l.ws.readyState <= 1) l.ws.close();
-  state.live = { running: false, audioCtx: null, stream: null, processor: null, ws: null };
-  $("#btnLiveToggle").textContent = "Iniciar captura";
+  state.live = { running: false, audioCtx: null, stream: null, workletNode: null, ws: null };
+  $("#btnLiveToggle").textContent = "Iniciar escuta contínua";
   $("#btnLiveAnalyzeNow").disabled = true;
   $("#liveStatus").textContent = "Parado";
   $("#meterFill").style.width = "0%";
   $("#clippingBadge").classList.add("hidden");
 }
 
-/* ==================== PERFIS & CONFIGURAÇÃO ==================== */
+/* ==================== PERFIS & CONFIGURAÇÃO (AUTO/MANUAL) ==================== */
+const MODE_INPUT_MAP = {
+  sample_rate: ["#cfgSampleRate"],
+  buffer_size: ["#cfgBufferSize"],
+  reference_gain_db: ["#cfgGain"],
+  window_sec: ["#cfgWindowSec"],
+  transient_ms: ["#cfgTransientMs"],
+  max_partials: ["#cfgMaxPartials"],
+  peak_tolerance_cents: ["#cfgPeakTol"],
+  min_confidence: ["#cfgMinConf"],
+  min_margin: ["#cfgMinMargin"],
+  weights: ["#cfgWeightB", "#cfgWeightDecay", "#cfgWeightSpec"],
+};
+
+function renderModePills() {
+  const modes = (state.editingProfile && state.editingProfile.param_modes) || {};
+  $$(".mode-pill").forEach((btn) => {
+    const key = btn.dataset.modeKey;
+    const isAuto = modes[key] === "auto";
+    btn.textContent = isAuto ? "auto" : "manual";
+    btn.classList.toggle("is-auto", isAuto);
+    (MODE_INPUT_MAP[key] || []).forEach((sel) => {
+      const inp = $(sel);
+      if (inp) {
+        inp.readOnly = isAuto;
+        inp.classList.toggle("field-auto", isAuto);
+      }
+    });
+  });
+}
+
 async function loadProfilesList(selectName = null) {
   const data = await api("/api/profiles");
   state.activeProfile = data.active;
@@ -537,31 +670,48 @@ async function loadProfileIntoForm(name) {
   $("#cfgChannel").value = prof.capture.channel;
   $("#cfgGain").value = prof.capture.reference_gain_db;
   $("#cfgBufferSize").value = prof.capture.buffer_size;
+  $("#cfgOnsetDb").value = prof.capture.onset_threshold_db ?? -36.0;
+  $("#cfgRearmSec").value = prof.capture.rearm_time_sec ?? 0.35;
+
+  const nfTxt =
+    prof.capture.noise_floor_db !== null && prof.capture.noise_floor_db !== undefined
+      ? `Piso de ruído: ${prof.capture.noise_floor_db} dBFS`
+      : "Piso de ruído: não medido";
+  const humList = prof.capture.hum_notch_freqs_hz || [];
+  const humTxt = humList.length
+    ? ` • Ronco excluído: ${prof.capture.hum_freq_hz || 60} Hz (${humList.length} faixas)`
+    : " • Sem ronco excluído";
+  $("#cfgNoiseHumInfo").textContent = nfTxt + humTxt;
 
   $("#cfgModelName").value = prof.instrument.model_name;
   $("#cfgNumFrets").value = prof.instrument.num_frets;
   $("#cfgScaleMm").value = prof.instrument.scale_length_mm;
+  $("#cfgA4Hz").value = prof.instrument.a4_hz ?? 440.0;
   $("#cfgPickup").value = prof.instrument.pickup_config || "";
 
   const tbody = $("#cfgStringsBody");
   tbody.innerHTML = "";
+  const offsets = prof.instrument.tuning_cents_offset || {};
   for (let s = 1; s <= 6; s++) {
     const note = prof.instrument.tuning[s] || "";
+    const off = offsets[s];
+    const offBadge =
+      off !== undefined && off !== null ? ` <span class="hint">(${off >= 0 ? "+" : ""}${off}c)</span>` : "";
     const spec = (prof.instrument.strings && prof.instrument.strings[s]) || {};
     tbody.innerHTML += `
       <tr>
-        <td><strong>${s}</strong></td>
+        <td><strong>${s}</strong>${offBadge}</td>
         <td><input type="text" data-str-tune="${s}" value="${note}" required /></td>
         <td>
           <select data-str-type="${s}">
-            <option value="" ${!spec.string_type ? "selected" : ""}>A estimar</option>
-            <option value="plain" ${spec.string_type === "plain" ? "selected" : ""}>Lisa (plain)</option>
-            <option value="wound" ${spec.string_type === "wound" ? "selected" : ""}>Encapada (wound)</option>
+            <option value="" ${!spec.string_type ? "selected" : ""}>Opcional</option>
+            <option value="plain" ${spec.string_type === "plain" ? "selected" : ""}>Lisa</option>
+            <option value="wound" ${spec.string_type === "wound" ? "selected" : ""}>Encapada</option>
           </select>
         </td>
         <td>
           <input type="number" step="0.001" min="0.006" max="0.080"
-                 data-str-gauge="${s}" placeholder="A estimar"
+                 data-str-gauge="${s}" placeholder="Opcional"
                  value="${spec.gauge_inches ?? ""}" />
         </td>
       </tr>
@@ -579,6 +729,8 @@ async function loadProfileIntoForm(name) {
   $("#cfgWeightDecay").value = a.weight_decay;
   $("#cfgWeightSpec").value = a.weight_spectral;
 
+  renderModePills();
+
   const cal = prof.calibration || {};
   const b0Map = cal.b0_by_string || {};
   const b0Keys = Object.keys(b0Map);
@@ -594,7 +746,7 @@ async function loadProfileIntoForm(name) {
     `;
   } else {
     $("#cfgCalibrationSummary").innerHTML = `
-      <strong>Sem calibração salva.</strong> Use a aba <em>Calibração Guiada</em> para estimar B0 por corda.
+      <strong>Sem calibração salva.</strong> Use o <em>Auto Tuning</em> ou <em>Calibração Guiada</em>.
     `;
   }
 }
@@ -603,12 +755,15 @@ function collectProfileFromForm() {
   const prof = structuredClone(state.editingProfile);
   prof.description = $("#cfgDescription").value;
   prof.capture = {
+    ...prof.capture,
     source_mode: $("#cfgSourceMode").value,
     device_name: $("#cfgDeviceName").value.trim() || null,
     sample_rate: parseInt($("#cfgSampleRate").value, 10),
     channel: parseInt($("#cfgChannel").value, 10),
     reference_gain_db: parseFloat($("#cfgGain").value),
     buffer_size: parseInt($("#cfgBufferSize").value, 10),
+    onset_threshold_db: parseFloat($("#cfgOnsetDb").value),
+    rearm_time_sec: parseFloat($("#cfgRearmSec").value),
   };
 
   const tuning = {};
@@ -623,10 +778,12 @@ function collectProfileFromForm() {
     };
   }
   prof.instrument = {
+    ...prof.instrument,
     model_name: $("#cfgModelName").value.trim(),
     tuning,
     num_frets: parseInt($("#cfgNumFrets").value, 10),
     scale_length_mm: parseFloat($("#cfgScaleMm").value),
+    a4_hz: parseFloat($("#cfgA4Hz").value),
     strings,
     pickup_config: $("#cfgPickup").value.trim() || null,
   };
@@ -648,6 +805,17 @@ function collectProfileFromForm() {
 
 function initConfigEvents() {
   $("#profileSelect").addEventListener("change", (e) => loadProfileIntoForm(e.target.value));
+
+  $$(".mode-pill").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!state.editingProfile) return;
+      const key = btn.dataset.modeKey;
+      state.editingProfile.param_modes = state.editingProfile.param_modes || {};
+      state.editingProfile.param_modes[key] =
+        state.editingProfile.param_modes[key] === "auto" ? "manual" : "auto";
+      renderModePills();
+    });
+  });
 
   $("#configForm").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -731,7 +899,7 @@ function initConfigEvents() {
   });
 }
 
-/* ==================== CALIBRAÇÃO GUIADA ==================== */
+/* ==================== CALIBRAÇÃO GUIADA (ABA 3) ==================== */
 async function loadCalibrationPlan() {
   const data = await api(`/api/calibration/plan?profile=${encodeURIComponent(state.activeProfile)}`);
   state.calibration.steps = data.steps || [];
@@ -795,50 +963,9 @@ async function recordCalibrationNote(key, btn) {
   const fret = parseInt(fStr, 10);
   btn.disabled = true;
   btn.textContent = "Gravando...";
-
   try {
     const deviceId = $("#audioDeviceSelect").value;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-    });
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
-    const sr = ctx.sampleRate;
-    const targetLen = Math.round(1.2 * sr);
-    const chunks = [];
-    let collected = 0;
-
-    await new Promise((resolve) => {
-      const src = ctx.createMediaStreamSource(stream);
-      const proc = ctx.createScriptProcessor(4096, 1, 1);
-      proc.onaudioprocess = (e) => {
-        const ch = new Float32Array(e.inputBuffer.getChannelData(0));
-        chunks.push(ch);
-        collected += ch.length;
-        if (collected >= targetLen) {
-          proc.disconnect();
-          src.disconnect();
-          stream.getTracks().forEach((t) => t.stop());
-          ctx.close();
-          resolve();
-        }
-      };
-      src.connect(proc);
-      proc.connect(ctx.destination);
-    });
-
-    const merged = new Float32Array(collected);
-    let offset = 0;
-    chunks.forEach((c) => {
-      merged.set(c, offset);
-      offset += c.length;
-    });
-
+    const rec = await captureFixedDurationWorklet(deviceId, 1.2);
     const res = await api("/api/calibration/measure-pcm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -846,8 +973,8 @@ async function recordCalibrationNote(key, btn) {
         profile: state.activeProfile,
         string,
         fret,
-        sample_rate: sr,
-        samples: Array.from(merged),
+        sample_rate: rec.sampleRate,
+        samples: Array.from(rec.samples),
       }),
     });
     state.calibration.results[key] = res;
@@ -896,13 +1023,505 @@ async function applyCalibration() {
   }
 }
 
+/* ==================== ASSISTENTE AUTO TUNING ==================== */
+function setWizardStep(stepNum) {
+  state.autotune.step = stepNum;
+  $$(".w-panel").forEach((p) => p.classList.remove("active"));
+  $(`#wPanel-${stepNum}`).classList.add("active");
+  $$(".w-step").forEach((el) => {
+    const n = parseInt(el.dataset.wstep, 10);
+    el.classList.toggle("active", n === stepNum);
+  });
+}
+
+function setWizardStepIcon(stepNum, status) {
+  const el = $(`.w-step[data-wstep="${stepNum}"]`);
+  if (!el) return;
+  el.classList.remove("done", "warn", "err");
+  const icon = el.querySelector(".w-icon");
+  if (status === "ok") {
+    el.classList.add("done");
+    icon.textContent = "✔";
+  } else if (status === "warn") {
+    el.classList.add("warn");
+    icon.textContent = "⚠";
+  } else if (status === "err") {
+    el.classList.add("err");
+    icon.textContent = "✖";
+  } else {
+    icon.textContent = "○";
+  }
+}
+
+function stopAutoTuneAudio() {
+  const at = state.autotune;
+  if (at.workletNode) at.workletNode.disconnect();
+  if (at.audioCtx) at.audioCtx.close();
+  if (at.stream) at.stream.getTracks().forEach((t) => t.stop());
+  if (at.ws && at.ws.readyState <= 1) at.ws.close();
+  at.workletNode = null;
+  at.audioCtx = null;
+  at.stream = null;
+  at.ws = null;
+}
+
+async function openAutoTuneModal() {
+  if (state.live.running) stopLiveCapture();
+  stopAutoTuneAudio();
+  state.autotune.sessionId = null;
+  state.autotune.tuningResults = {};
+  state.autotune.calResults = {};
+  state.autotune.proposal = null;
+  for (let i = 1; i <= 6; i++) setWizardStepIcon(i, "pending");
+  $("#atSilenceResult").classList.add("hidden");
+  $("#atLevelResult").classList.add("hidden");
+  $("#btnAtStep2Next").disabled = true;
+  $("#btnAtStep3Next").disabled = true;
+
+  $("#autotuneModal").classList.remove("hidden");
+  setWizardStep(1);
+  await refreshAudioDevices("#atDeviceSelect");
+}
+
+function closeAutoTuneModal() {
+  stopAutoTuneAudio();
+  $("#autotuneModal").classList.add("hidden");
+}
+
+async function startAutoTuneMonitor() {
+  stopAutoTuneAudio();
+  const deviceId = $("#atDeviceSelect").value;
+  if (!deviceId) return;
+  try {
+    const cap = await startWorkletCapture(deviceId, 2048, (chunk) => {
+      let sum = 0;
+      for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+      const rms = Math.sqrt(sum / chunk.length + 1e-18);
+      const db = 20 * Math.log10(rms + 1e-12);
+      $("#atMonitorDb").textContent = `${db.toFixed(1)} dB`;
+      const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+      $("#atMonitorFill").style.width = `${pct}%`;
+    });
+    state.autotune.audioCtx = cap.audioCtx;
+    state.autotune.stream = cap.stream;
+    state.autotune.workletNode = cap.workletNode;
+    state.autotune.sampleRate = cap.sampleRate;
+    state.autotune.baseLatency = cap.baseLatency;
+    const latTxt = cap.baseLatency !== null ? ` • baseLatency ${(cap.baseLatency * 1000).toFixed(1)} ms` : "";
+    $("#atDeviceMeta").textContent = `Taxa real: ${cap.sampleRate} Hz${latTxt}`;
+  } catch (err) {
+    $("#atDeviceMeta").textContent = `Erro ao monitorar placa: ${err.message}`;
+  }
+}
+
+async function handleAutoTuneStep1Next() {
+  const mode = document.querySelector('input[name="atMode"]:checked').value;
+  state.autotune.mode = mode;
+
+  const created = await api("/api/autotune/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, profile: state.activeProfile }),
+  });
+  state.autotune.sessionId = created.session_id;
+
+  if (mode === "dataset") {
+    // Modo Arquivo/Dataset: pula hardware (etapas 1–3) e executa calibração + pesos + limiares
+    const btn = $("#btnAtStep1Next");
+    btn.disabled = true;
+    btn.textContent = "Executando Auto Tuning no dataset...";
+    try {
+      const frets = $("#atCalFrets")
+        .value.trim()
+        .split(/\s+/)
+        .map((x) => parseInt(x, 10))
+        .filter((x) => !Number.isNaN(x));
+      const targetErr = parseFloat($("#atTargetError").value) || 0.10;
+      const proposal = await api(`/api/autotune/session/${created.session_id}/dataset-auto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cal_frets: frets.length ? frets : [0, 12],
+          target_error_rate: targetErr,
+        }),
+      });
+      setWizardStepIcon(1, "ok");
+      setWizardStepIcon(4, "ok");
+      setWizardStepIcon(5, "ok");
+      renderAutoTuneProposal(proposal);
+      setWizardStep(6);
+    } catch (err) {
+      alert(`Erro no Auto Tuning de dataset: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Continuar →";
+    }
+    return;
+  }
+
+  // Modo Ao vivo: grava placa/taxa/buffer e avança para etapa 2 (silêncio)
+  stopAutoTuneAudio();
+  const sel = $("#atDeviceSelect");
+  const devLabel = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : null;
+  await api(`/api/autotune/session/${created.session_id}/device`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      device_name: devLabel,
+      sample_rate: state.autotune.sampleRate || 48000,
+      channel: 0,
+      base_latency_sec: state.autotune.baseLatency,
+    }),
+  });
+  setWizardStepIcon(1, "ok");
+  setWizardStep(2);
+}
+
+async function handleAutoTuneSilence() {
+  const btn = $("#btnAtCaptureSilence");
+  btn.disabled = true;
+  btn.textContent = "Medindo silêncio (2 s)...";
+  try {
+    const rec = await captureFixedDurationWorklet($("#atDeviceSelect").value, 2.0);
+    const res = await api(`/api/autotune/session/${state.autotune.sessionId}/silence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sample_rate: rec.sampleRate,
+        samples: Array.from(rec.samples),
+      }),
+    });
+    const nf = res.noise_floor;
+    const hum = res.hum;
+    const box = $("#atSilenceResult");
+    box.innerHTML = `
+      <p><strong>Piso de ruído:</strong> ${nf.rms_db} dBFS • Limiar de ataque sugerido: <strong>${nf.suggested_onset_threshold_db} dBFS</strong></p>
+      <p>${nf.message}</p>
+      <p style="margin-top:6px"><strong>Ronco da rede:</strong> ${hum.message}</p>
+    `;
+    box.classList.remove("hidden");
+    setWizardStepIcon(2, nf.status === "too_loud" ? "warn" : "ok");
+    $("#btnAtStep2Next").disabled = false;
+  } catch (err) {
+    alert(`Erro ao medir silêncio: ${err.message}`);
+    setWizardStepIcon(2, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Medir 2 segundos de silêncio novamente";
+  }
+}
+
+async function handleAutoTuneLevel() {
+  const btn = $("#btnAtCaptureLevel");
+  btn.disabled = true;
+  btn.textContent = "Capturando nota forte (1,5 s)...";
+  try {
+    const rec = await captureFixedDurationWorklet($("#atDeviceSelect").value, 1.5);
+    const res = await api(`/api/autotune/session/${state.autotune.sessionId}/level`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ samples: Array.from(rec.samples) }),
+    });
+    const box = $("#atLevelResult");
+    box.innerHTML = `
+      <p><strong>Pico:</strong> ${res.peak_db} dBFS • <strong>RMS:</strong> ${res.rms_db} dBFS • <strong>Clipping:</strong> ${res.clipped_samples} amostras</p>
+      <p>${res.message}</p>
+    `;
+    box.classList.remove("hidden");
+    setWizardStepIcon(3, res.status === "good" ? "ok" : res.status === "clipping" ? "err" : "warn");
+    $("#btnAtStep3Next").disabled = false;
+  } catch (err) {
+    alert(`Erro ao medir nível: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Medir nota forte novamente";
+  }
+}
+
+async function startAutoTuneWsStream(onMessage) {
+  stopAutoTuneAudio();
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${wsProto}://${location.host}/ws/autotune`);
+  ws.binaryType = "arraybuffer";
+  const cap = await startWorkletCapture($("#atDeviceSelect").value, 2048, (chunk) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(chunk.buffer);
+  });
+  await new Promise((resolve) => {
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({
+          type: "init",
+          session_id: state.autotune.sessionId,
+          sample_rate: cap.sampleRate,
+        })
+      );
+      resolve();
+    };
+  });
+  ws.onmessage = (ev) => onMessage(JSON.parse(ev.data), ws);
+  state.autotune.audioCtx = cap.audioCtx;
+  state.autotune.stream = cap.stream;
+  state.autotune.workletNode = cap.workletNode;
+  state.autotune.ws = ws;
+  return ws;
+}
+
+function renderAutoTuneTuningTable() {
+  const wrap = $("#atTuningTableWrap");
+  const rows = state.autotune.tuningOrder
+    .map((s) => {
+      const r = state.autotune.tuningResults[s];
+      const f0 = r ? `${r.f0_hz} Hz` : "—";
+      const note = r ? `${r.nearest_note} (${r.cents_from_440 >= 0 ? "+" : ""}${r.cents_from_440} c)` : "Aguardando";
+      const st = r ? (r.accepted ? "✔ OK" : `✖ ${r.reason}`) : "○";
+      return `<tr><td><strong>Corda ${s}</strong></td><td>${f0}</td><td>${note}</td><td>${st}</td></tr>`;
+    })
+    .join("");
+  wrap.innerHTML = `<table class="cal-table"><thead><tr><th>Corda</th><th>f0</th><th>Nota / Desvio</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function startClickFreeTuning() {
+  state.autotune.tuningIdx = 0;
+  state.autotune.tuningResults = {};
+  renderAutoTuneTuningTable();
+  $("#btnAtRepeatTuning").disabled = false;
+
+  const ws = await startAutoTuneWsStream((msg, socket) => {
+    if (msg.type === "tuning_result") {
+      const r = msg.data;
+      state.autotune.tuningResults[r.string] = r;
+      renderAutoTuneTuningTable();
+      if (r.summary) {
+        const b = $("#atTuningPresetBanner");
+        b.textContent = `Afinação detectada: ${r.summary.preset_name} • Referência A4: ${r.summary.a4_hz} Hz`;
+        b.classList.remove("hidden");
+      }
+      if (r.accepted) {
+        state.autotune.tuningIdx += 1;
+        if (state.autotune.tuningIdx < state.autotune.tuningOrder.length) {
+          const nextS = state.autotune.tuningOrder[state.autotune.tuningIdx];
+          $("#atTuningPrompt").textContent = `Agora toque a Corda ${nextS} solta...`;
+          socket.send(JSON.stringify({ type: "set_step", step: "tuning", string: nextS, fret: 0 }));
+        } else {
+          $("#atTuningPrompt").textContent = "✔ Todas as 6 cordas detectadas!";
+          setWizardStepIcon(4, "ok");
+          stopAutoTuneAudio();
+        }
+      } else {
+        $("#atTuningPrompt").textContent = `✖ ${r.reason} Toque a Corda ${r.string} solta novamente.`;
+      }
+    }
+  });
+
+  const firstS = state.autotune.tuningOrder[0];
+  $("#atTuningPrompt").textContent = `Toque a Corda ${firstS} solta (sem clicar)...`;
+  ws.send(JSON.stringify({ type: "set_step", step: "tuning", string: firstS, fret: 0 }));
+}
+
+function renderAutoTuneCalGrid() {
+  const list = $("#atCalProgressList");
+  list.innerHTML = state.autotune.calQueue
+    .map((item, idx) => {
+      const key = `${item.string}-${item.fret}`;
+      const r = state.autotune.calResults[key];
+      const cls = r ? (r.accepted ? "ok" : "err") : idx === state.autotune.calIdx ? "current" : "";
+      const txt = r
+        ? r.accepted
+          ? `✔ B=${r.b_measured.toExponential(1)} (${r.residual_cents}c)`
+          : `✖ ${r.reason}`
+        : "Pendente";
+      return `<div class="at-cal-chip ${cls}"><strong>C${item.string} • Casa ${item.fret}</strong><br/><span class="hint">${txt}</span></div>`;
+    })
+    .join("");
+}
+
+async function startClickFreeCalibration() {
+  state.autotune.calQueue = [];
+  for (const s of [6, 5, 4, 3, 2, 1]) {
+    state.autotune.calQueue.push({ string: s, fret: 0 });
+    state.autotune.calQueue.push({ string: s, fret: 12 });
+  }
+  state.autotune.calIdx = 0;
+  state.autotune.calResults = {};
+  renderAutoTuneCalGrid();
+  $("#btnAtRepeatCal").disabled = false;
+
+  const ws = await startAutoTuneWsStream((msg, socket) => {
+    if (msg.type === "calibration_result") {
+      const r = msg.data;
+      state.autotune.calResults[`${r.string}-${r.fret}`] = r;
+      if (r.accepted) {
+        state.autotune.calIdx += 1;
+      }
+      renderAutoTuneCalGrid();
+      if (state.autotune.calIdx < state.autotune.calQueue.length) {
+        const cur = state.autotune.calQueue[state.autotune.calIdx];
+        $("#atCalPrompt").textContent = r.accepted
+          ? `✔ Aceita! Agora toque Corda ${cur.string} • Casa ${cur.fret} (${state.autotune.calIdx + 1}/${state.autotune.calQueue.length})`
+          : `✖ Rejeitada (${r.reason}). Repita Corda ${cur.string} • Casa ${cur.fret}.`;
+        socket.send(
+          JSON.stringify({
+            type: "set_step",
+            step: "calibration",
+            string: cur.string,
+            fret: cur.fret,
+          })
+        );
+      } else {
+        $("#atCalPrompt").textContent = "✔ Calibração concluída! Avance para o resumo.";
+        setWizardStepIcon(5, "ok");
+        stopAutoTuneAudio();
+      }
+    }
+  });
+
+  const first = state.autotune.calQueue[0];
+  $("#atCalPrompt").textContent = `Toque Corda ${first.string} • Casa ${first.fret} (1/${state.autotune.calQueue.length})...`;
+  ws.send(
+    JSON.stringify({
+      type: "set_step",
+      step: "calibration",
+      string: first.string,
+      fret: first.fret,
+    })
+  );
+}
+
+function renderAutoTuneProposal(proposal) {
+  state.autotune.proposal = proposal;
+  const warnBox = $("#atWarningsBox");
+  if (proposal.warnings && proposal.warnings.length) {
+    warnBox.innerHTML = proposal.warnings.map((w) => `<div>⚠ ${w}</div>`).join("");
+    warnBox.classList.remove("hidden");
+  } else {
+    warnBox.classList.add("hidden");
+  }
+
+  const fmt = (v) => {
+    if (v === null || v === undefined) return "—";
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "nenhuma";
+    if (typeof v === "object") return Object.entries(v).map(([k, val]) => `${k}:${val}`).join(" ");
+    return String(v);
+  };
+
+  $("#atSummaryTableBody").innerHTML = (proposal.changes || [])
+    .map((c) => {
+      const modeBadge = c.mode === "auto" ? ` <span class="badge-est">auto</span>` : "";
+      return `
+        <tr>
+          <td><strong>${c.label}</strong>${modeBadge}</td>
+          <td class="muted">${fmt(c.current_value)}</td>
+          <td><strong>${fmt(c.proposed_value)}</strong></td>
+          <td class="hint">${c.how_obtained}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  setWizardStepIcon(6, "ok");
+}
+
+function initAutoTuneWizard() {
+  $("#btnOpenAutoTuneTop").addEventListener("click", openAutoTuneModal);
+  $("#btnOpenAutoTuneConfig").addEventListener("click", openAutoTuneModal);
+  $("#btnCloseAutoTune").addEventListener("click", closeAutoTuneModal);
+  $("#btnAtDiscard").addEventListener("click", closeAutoTuneModal);
+
+  $$('input[name="atMode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      const isLive = radio.value === "live";
+      $("#atLiveDeviceBox").classList.toggle("hidden", !isLive);
+      $("#atDatasetBox").classList.toggle("hidden", isLive);
+      if (!isLive) stopAutoTuneAudio();
+    });
+  });
+
+  $("#btnAtRefreshDevices").addEventListener("click", async () => {
+    await refreshAudioDevices("#atDeviceSelect");
+    await startAutoTuneMonitor();
+  });
+  $("#atDeviceSelect").addEventListener("change", startAutoTuneMonitor);
+
+  $("#btnAtStep1Next").addEventListener("click", handleAutoTuneStep1Next);
+  $("#btnAtCaptureSilence").addEventListener("click", handleAutoTuneSilence);
+  $("#btnAtStep2Next").addEventListener("click", () => setWizardStep(3));
+  $("#btnAtCaptureLevel").addEventListener("click", handleAutoTuneLevel);
+  $("#btnAtStep3Next").addEventListener("click", () => setWizardStep(4));
+
+  $("#btnAtStartTuning").addEventListener("click", startClickFreeTuning);
+  $("#btnAtRepeatTuning").addEventListener("click", () => {
+    if (state.autotune.ws && state.autotune.ws.readyState === WebSocket.OPEN) {
+      const curS = state.autotune.tuningOrder[Math.min(state.autotune.tuningIdx, 5)];
+      state.autotune.ws.send(JSON.stringify({ type: "set_step", step: "tuning", string: curS, fret: 0 }));
+    }
+  });
+  $("#btnAtStep4Next").addEventListener("click", () => {
+    stopAutoTuneAudio();
+    setWizardStep(5);
+  });
+
+  $("#btnAtStartCal").addEventListener("click", startClickFreeCalibration);
+  $("#btnAtRepeatCal").addEventListener("click", () => {
+    if (state.autotune.ws && state.autotune.ws.readyState === WebSocket.OPEN && state.autotune.calQueue.length) {
+      const cur = state.autotune.calQueue[Math.min(state.autotune.calIdx, state.autotune.calQueue.length - 1)];
+      state.autotune.ws.send(JSON.stringify({ type: "set_step", step: "calibration", string: cur.string, fret: cur.fret }));
+    }
+  });
+
+  $("#btnAtStep5Next").addEventListener("click", async () => {
+    stopAutoTuneAudio();
+    const prop = await api(`/api/autotune/session/${state.autotune.sessionId}/proposal`);
+    renderAutoTuneProposal(prop);
+    setWizardStep(6);
+  });
+
+  $$("[data-wgoto]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      stopAutoTuneAudio();
+      setWizardStep(parseInt(btn.dataset.wgoto, 10));
+    });
+  });
+
+  $("#btnAtApplyActive").addEventListener("click", async () => {
+    try {
+      await api(`/api/autotune/session/${state.autotune.sessionId}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "apply_active" }),
+      });
+      closeAutoTuneModal();
+      await loadProfilesList();
+      alert("Proposta aplicada ao perfil ativo com sucesso!");
+    } catch (err) {
+      alert(`Erro ao aplicar: ${err.message}`);
+    }
+  });
+
+  $("#btnAtSaveAsNew").addEventListener("click", async () => {
+    const newName = prompt("Nome do novo perfil (sem espaços/barras):", `${state.activeProfile}_autotune`);
+    if (!newName) return;
+    try {
+      await api(`/api/autotune/session/${state.autotune.sessionId}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_as_new", new_name: newName.trim() }),
+      });
+      closeAutoTuneModal();
+      await loadProfilesList(newName.trim());
+      alert(`Novo perfil '${newName.trim()}' criado e ativado!`);
+    } catch (err) {
+      alert(`Erro ao salvar novo perfil: ${err.message}`);
+    }
+  });
+}
+
 /* ==================== BOOT ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
   initFileAndDataset();
   initConfigEvents();
+  initAutoTuneWizard();
 
-  $("#btnRefreshDevices").addEventListener("click", refreshAudioDevices);
+  $("#btnRefreshDevices").addEventListener("click", () => refreshAudioDevices("#audioDeviceSelect"));
   $("#btnLiveToggle").addEventListener("click", toggleLiveCapture);
   $("#btnLiveAnalyzeNow").addEventListener("click", () => {
     if (state.live.ws && state.live.ws.readyState === WebSocket.OPEN) {
