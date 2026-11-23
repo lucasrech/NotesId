@@ -1,0 +1,30 @@
+# Registro de Decisões Técnicas
+
+Este documento registra escolhas de projeto, suposições adotadas diante de ambiguidades e justificativas técnicas.
+
+## 1. Captura ao vivo via Web Audio API no navegador
+- **Contexto:** O ambiente de execução é Ubuntu 24 no WSL2, que não expõe de maneira estável e de baixa latência as interfaces de áudio USB/ASIO do Windows.
+- **Decisão:** Realizar a captura ao vivo no navegador (Windows) usando `navigator.mediaDevices.enumerateDevices()` e `getUserMedia` com todos os processamentos de voz desativados (`echoCancellation: false`, `noiseSuppression: false`, `autoGainControl: false`), transmitindo blocos PCM `float32` via WebSocket (`/ws/live`) para o backend FastAPI.
+- **Alternativa preservada:** `SoundDeviceAudioSource` implementada atrás da interface `AudioSource` para uso futuro em sistemas nativos.
+
+## 2. Subconjunto baixado do EGFxSet
+- **Contexto:** O registro Zenodo 7044411 possui 14 arquivos totalizando **5,81 GB** (12 pedais/efeitos + `Clean.zip` + `egfxset_metadata.csv`).
+- **Decisão:** O script `scripts/download_egfxset.py` baixa por padrão apenas `Clean.zip` (431,0 MB, 690 arquivos WAV limpos) e `egfxset_metadata.csv`, com retomada (`curl -C -`) e verificação MD5. A flag `--all` permite baixar o restante se desejado.
+
+## 3. Escala assumida no perfil `egfxset.yaml`
+- **Suposição:** A guitarra do EGFxSet é uma Fender Stratocaster de 22 casas; assumimos o comprimento de escala padrão Fender de **648,0 mm** (25,5 polegadas).
+- **Status:** Valor registrado como suposição editável no arquivo `configs/profiles/egfxset.yaml` e na página de configuração da interface web. Os calibres e tipos das cordas foram deixados como `null` ("a estimar") por padrão.
+
+## 4. Dependências leves (sem `librosa`)
+- **Decisão:** Implementamos YIN (via FFT), STFT, fluxo espectral, interpolação parabólica, centroide e roll-off diretamente com `numpy` e `scipy`, evitando adicionar `librosa` (e sua cadeia pesada de dependências como `numba`/`llvmlite`). Isso acelera a instalação com `uv` e mantém o processamento 100% transparente.
+
+## 5. Rastreamento progressivo de parciais e ajuste IRLS de $B$
+- **Contexto:** Em casas altas (onde $B$ ultrapassa $5 \times 10^{-4}$), parciais superiores ($n \ge 6$) deslocam-se mais de 40–100 cents acima de $n \cdot f_0$, saindo de janelas de busca fixas.
+- **Decisão:** Usar janela Blackman-Harris (lóbulos laterais < −92 dB) com zero-padding $4\times$, rastreamento progressivo dos parciais (atualizando a predição $n f_0 \sqrt{1 + B n^2}$ a partir do 3º parcial) e ajuste robusto IRLS com pesos de Huber na forma linearizada $(f_n / n)^2 = f_0^2 + (f_0^2 B) n^2$.
+
+## 6. Classificação em escala logarítmica ($\ln B$) com abstenção
+- **Contexto:** O coeficiente $B$ varia em duas ordens de grandeza ($2{,}5 \times 10^{-5}$ a $2 \times 10^{-3}$) e seus erros relativos são aproximadamente proporcionais ao valor de $B$.
+- **Decisão:** Modelar a distância principal em $\ln B$, combinada com taxa de decaimento média por parcial (peso 0,25) e centroide espectral normalizado (peso 0,05) em um classificador gaussiano / Mahalanobis. Quando a confiança fica abaixo de `min_confidence` (0,45) ou a margem entre 1º e 2º candidato fica abaixo de `min_margin` (0,10), o sistema retorna `indeterminado`.
+
+## 7. Protocolo de avaliação com separação estrita por casa
+- **Decisão:** Calibrar o perfil `egfxset` usando **apenas as casas 0 e 12** (espelhando o fluxo da calibração guiada na interface) e avaliar exclusivamente nas **21 casas restantes** (630 arquivos), reportando tanto a acurácia geral quanto a acurácia apenas em notas ambíguas (≥ 2 posições possíveis).
