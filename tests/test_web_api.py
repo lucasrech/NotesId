@@ -23,10 +23,11 @@ def test_web_api_profiles_and_upload(tmp_path: Path) -> None:
     app = create_app(profiles_dir=tmp_path / "profiles", dataset_dir=tmp_path / "data")
     client = TestClient(app)
 
-    # Página principal
+    # Página principal + cabeçalho no-cache
     r_idx = client.get("/")
     assert r_idx.status_code == 200
     assert "Identificador de Corda e Casa" in r_idx.text
+    assert "no-cache" in r_idx.headers.get("cache-control", "")
 
     # Perfis CRUD
     r_list = client.get("/api/profiles")
@@ -90,6 +91,9 @@ def test_live_websocket_level_and_trigger(tmp_path: Path) -> None:
         ws.send_json({"type": "config", "sample_rate": 48000, "profile": "egfxset"})
         ready = ws.receive_json()
         assert ready["type"] == "ready"
+        status = ws.receive_json()
+        assert status["type"] == "status"
+        assert status["state"] == "listening"
 
         ws.send_bytes(block)
         lvl = ws.receive_json()
