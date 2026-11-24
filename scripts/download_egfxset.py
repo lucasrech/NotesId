@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 import sys
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -46,23 +46,61 @@ def verify_checksum(path: Path, expected_checksum: str | None) -> bool:
     return actual_md5 == expected_md5
 
 
-def download_with_resume(url: str, dest: Path) -> None:
-    """Baixa um arquivo usando curl com retomada (-C -)."""
+def download_with_resume(url: str, dest: Path, chunk_size: int = 1024 * 1024) -> None:
+    """Baixa um arquivo em Python puro com suporte a retomada (HTTP Range).
+
+    Funciona de forma idêntica no Linux, macOS e Windows nativo sem depender
+    do binário externo `curl`.
+
+    Args:
+        url: URL direta do arquivo.
+        dest: Caminho de destino em disco.
+        chunk_size: Tamanho de cada bloco lido da rede em bytes (padrão: 1 MiB).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "curl",
-        "-L",
-        "-C",
-        "-",
-        "--fail",
-        "--retry",
-        "3",
-        "--progress-bar",
-        "-o",
-        str(dest),
-        url,
-    ]
-    subprocess.run(cmd, check=True)
+    existing_bytes = dest.stat().st_size if dest.exists() else 0
+
+    headers: dict[str, str] = {"User-Agent": "NotesId-DatasetDownloader/1.0"}
+    if existing_bytes > 0:
+        headers["Range"] = f"bytes={existing_bytes}-"
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        resp = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and existing_bytes > 0:
+            # 416 Range Not Satisfiable normalmente indica arquivo já completo
+            return
+        raise
+
+    with resp:
+        status = getattr(resp, "status", 200)
+        if status == 206 and existing_bytes > 0:
+            mode = "ab"
+            downloaded = existing_bytes
+        else:
+            mode = "wb"
+            downloaded = 0
+
+        content_len = resp.headers.get("Content-Length")
+        total = (downloaded + int(content_len)) if content_len and content_len.isdigit() else None
+
+        with dest.open(mode) as fp:
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                fp.write(chunk)
+                downloaded += len(chunk)
+                if total and total > 0:
+                    pct = 100.0 * downloaded / total
+                    print(
+                        f"\r  {downloaded / 1e6:6.1f} / {total / 1e6:6.1f} MB ({pct:5.1f}%)",
+                        end="",
+                        flush=True,
+                    )
+        if total:
+            print()
 
 
 def extract_zip(zip_path: Path, dest_dir: Path) -> None:
