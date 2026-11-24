@@ -87,6 +87,17 @@ flowchart LR
 - **Perfis e Calibração:** perfis YAML validados com Pydantic (`Captação`, `Instrumento`, `Análise`, `Calibração`), alternância `auto`/`manual` por parâmetro, página **Calibração Guiada** e assistente **Auto Tuning** de 6 etapas (ordena placas, mede silêncio e ronco 50/60 Hz, checa nível, detecta afinação das 6 cordas e afinações alternativas, calibra $B_0$ e estima pesos de Fisher e limiares).
 - **Gerador Sintético de Corda Rígida:** modelo Karplus-Strong com filtro *all-pass* de dispersão para validar a recuperação de $f_0$ e $B$ em laboratório.
 
+### Modos de uso
+
+| Modo | Caminho do sinal | Hardware necessário | Acertividade esperada | Status |
+|---|---|---|---|---|
+| **Arquivo / Dataset** | WAV/FLAC/OGG local ou EGFxSet | Nenhum (apenas PC) | **Referência** (87,0% Top-1 / 90,4% Decidido no EGFxSet) | Recomendado e testado |
+| **Ao vivo — Interface USB Hi-Z** | Guitarra → cabo P10 → interface USB Hi-Z → navegador do PC | Interface USB (Hi-Z) | **Melhor opção ao vivo** (sinal elétrico limpo e direto) | **Recomendado** |
+| **Ao vivo — Microfone do celular (LAN)** | Guitarra → ar da sala → microfone do celular → Wi-Fi (HTTPS) → PC | Celular + mesmo Wi-Fi | **Substancialmente menor** (não medida; eco + filtros do celular) | ![Experimental](https://img.shields.io/badge/Modo-Experimental-orange) |
+
+> [!WARNING]
+> **Usar o microfone do celular prejudica o sistema e diminui bastante a acertividade.** O NotesId foi projetado e avaliado com **sinal elétrico limpo e direto** do captador da guitarra. Captar som pelo ar com microfone de celular adiciona eco da sala, ruído ambiente e filtros automáticos de voz que borram os pequenos deslocamentos dos parciais usados para medir a inarmonicidade $B$. Veja a [Seção 5.5](#55-usar-o-celular-como-microfone-experimental) para detalhes e limitações.
+
 ---
 
 ## 4. Resultados e limitações
@@ -116,7 +127,8 @@ Todos os parâmetros ($B_0$, modelo de decaimento, pesos de Fisher e limiares de
 - [5.2 Instalação (Início rápido, Ubuntu 24.04 nativo, Windows 10/11 nativo)](#52-instalação)
 - [5.3 Primeiros passos (dataset e iniciar o app)](#53-primeiros-passos)
 - [5.4 Captura ao vivo e conexão da guitarra](#54-captura-ao-vivo-e-conexão-da-guitarra)
-- [5.5 Usando as telas do app](#55-usando-as-telas-do-app)
+- [5.5 Usar o celular como microfone (experimental)](#55-usar-o-celular-como-microfone-experimental)
+- [5.6 Usando as telas do app](#56-usando-as-telas-do-app)
 
 ### 5.1 Antes de começar
 
@@ -352,7 +364,139 @@ flowchart LR
 > - **Ronco de 60 Hz:** rode o **⚡ Auto Tuning** (Capítulo 6) para detectar e excluir o 60 Hz e seus harmônicos.
 > - **Corda errada na sua guitarra:** o perfil `egfxset` padrão foi calibrado numa Stratocaster. Sempre calibre para a **sua própria guitarra** (Capítulo 6).
 
-### 5.5 Usando as telas do app
+### 5.5 Usar o celular como microfone (experimental)
+
+![Experimental](https://img.shields.io/badge/Modo-Experimental-orange)
+
+Se você ainda não tem uma interface de áudio USB e quer testar o NotesId rapidamente, é possível rodar o servidor no computador e abrir a interface web em um **celular pela rede Wi-Fi local**, usando o microfone do próprio celular como captação.
+
+#### Como funciona
+
+```mermaid
+flowchart LR
+    G["Guitarra<br/>(Amplificador ou Violão)"] --> A["Ar da sala"]
+    A --> M["Microfone do celular"]
+    M --> W["Wi-Fi local<br/>(HTTPS / WSS)"]
+    W --> PC["Servidor NotesId<br/>no seu PC"]
+    PC --> S["Resultado exibido<br/>na tela do celular"]
+```
+
+Todo o áudio permanece estritamente **dentro da sua rede Wi-Fi local** — nada é enviado para a internet.
+
+> [!WARNING]
+> **Por que este modo prejudica o sistema e reduz bastante a acertividade:**
+> - **Som pelo ar, eco da sala e ruído ambiente** mascaram os [parciais](docs/GLOSSARY.pt-BR.md#harmônicos-e-parciais) agudos mais fracos ($n = 4 \dots 12$) dos quais o NotesId depende para medir a [inarmonicidade $B$](docs/GLOSSARY.pt-BR.md#inharmonicidade-b).
+> - **Processamento automático de voz do celular e do navegador** (supressão de ruído, cancelamento de eco, ganho automático) costuma ser imposto pelo sistema do celular mesmo quando a página pede áudio bruto — especialmente no **iPhone / Safari**.
+> - **Sensibilidade à distância e posição:** mover o celular poucos centímetros muda as reflexões da sala e altera o espectro medido.
+> - **Guitarra elétrica desplugada tem volume muito baixo:** sem amplificador, o som acústico da guitarra elétrica é fraco, com pouco sustain e muito ruído relativo.
+> - **Bluetooth degrada severamente o áudio:** perfis de microfone Bluetooth (HFP/SCO) reduzem a taxa de amostragem para 8–16 kHz, destruindo os parciais agudos.
+>
+> **Expectativa honesta:** a acertividade no modo microfone de celular **não foi medida** e tende a ser **substancialmente menor** do que os resultados com sinal limpo do EGFxSet no Capítulo 4. Espere respostas `Indeterminado` mais frequentes e mais erros de corda, especialmente em casas mais altas.
+
+#### Requisitos
+
+- **Mesma rede Wi-Fi:** o computador e o celular precisam estar conectados ao mesmo roteador Wi-Fi privado (redes de visitantes ou corporativas costumam ativar *isolamento de clientes*, impedindo que um aparelho enxergue o outro).
+- **Navegador recomendado no celular:** **Google Chrome** (Chromium) no Android. **Safari / iOS não foi testado** e aplica processamento de áudio mais agressivo.
+
+#### Passo a passo
+
+Expanda o guia do sistema operacional do seu computador abaixo (todos os exemplos usam o [IP local](docs/GLOSSARY.pt-BR.md#ip-local--rede-local-lan) fictício `192.168.0.10` — troque pelo IP real do seu PC):
+
+<details>
+<summary><strong>Windows 10/11 (PowerShell)</strong></summary>
+
+1. **Passo 1 de 9 — Descubra o IP local do PC:** Abra o PowerShell e execute:
+   ```powershell
+   # PowerShell (Windows 10/11)
+   ipconfig
+   ```
+   Procure em **Adaptador de Rede sem Fio Wi-Fi** (ou **Ethernet**) a linha **Endereço IPv4** (por exemplo, `192.168.0.10`).
+2. **Passo 2 de 9 — Inicie o NotesId na rede local com HTTPS:** Navegadores de celular bloqueiam o microfone em páginas HTTP fora de `localhost`, por isso `--https` é obrigatório (o NotesId gera automaticamente um [certificado autoassinado](docs/GLOSSARY.pt-BR.md#certificado-autoassinado) em `.certs/`, ignorado pelo Git):
+   ```powershell
+   # PowerShell (dentro da pasta NotesId)
+   uv run guitar-string-identifier --host 0.0.0.0 --port 8000 --https
+   ```
+3. **Passo 3 de 9 — Libere a porta `8000` no Firewall do Windows Defender (apenas rede Privada):** Se o Windows perguntar, marque apenas **Redes privadas** (desmarque Públicas). Ou abra o PowerShell **como Administrador** para criar uma regra temporária:
+   ```powershell
+   # PowerShell (Administrador) — libera a porta 8000 apenas em Wi-Fi Privado
+   New-NetFirewallRule -DisplayName "NotesId LAN 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Profile Private -Action Allow
+   ```
+   *(Para remover a regra ao terminar: `Remove-NetFirewallRule -DisplayName "NotesId LAN 8000"`.)*
+4. **Passo 4 de 9 — Abra o NotesId no celular:** No Chrome do celular, acesse **`https://192.168.0.10:8000`** (usando o seu IP real e `https://`).
+5. **Passo 5 de 9 — Aceite o aviso de certificado autoassinado:** O Chrome exibirá *"Sua conexão não é particular"*. Toque em **Avançado** → **Ir para 192.168.0.10 (não seguro)**. Esse aviso é esperado **apenas** porque o seu próprio PC gerou o certificado local — **nunca** aceite esse aviso em sites desconhecidos.
+6. **Passo 6 de 9 — Ative o microfone do celular no NotesId:** Na aba **Identificar**, toque em **Ao vivo (placa de captura)**, toque em **Atualizar** (`①`), permita o acesso ao microfone, selecione o microfone do celular e toque em **Iniciar escuta contínua** (`②`). Confirme que **`Escutando`** (`③`) fica verde.
+7. **Passo 7 de 9 — Calibre já na posição fixa de uso:** Apoie o celular em um suporte fixo perto do amplificador ou violão e execute o **⚡ Auto Tuning** (Capítulo 6) para o NotesId medir o ruído da sala e a resposta do microfone exatamente nessa posição.
+8. **Passo 8 de 9 — Toque uma nota isolada por vez:** Deixe cada nota soar por ~1 segundo e acompanhe o resultado na tela do celular (espere mais `Indeterminado` e erros do que com interface USB).
+9. **Passo 9 de 9 — Encerre o servidor e volte ao modo local seguro:** Pressione `Ctrl + C` no PowerShell, remova a regra temporária do firewall se desejar e, da próxima vez, inicie normalmente com `uv run guitar-string-identifier` (que escuta apenas em `127.0.0.1`).
+
+</details>
+
+<details>
+<summary><strong>Ubuntu 24.04 (Bash)</strong></summary>
+
+1. **Passo 1 de 9 — Descubra o IP local do PC:** Abra o Terminal e execute:
+   ```bash
+   # Bash (Ubuntu 24.04)
+   hostname -I
+   ```
+   Use o primeiro endereço IPv4 exibido (por exemplo, `192.168.0.10`).
+2. **Passo 2 de 9 — Inicie o NotesId na rede local com HTTPS:** Navegadores de celular exigem [HTTPS](docs/GLOSSARY.pt-BR.md#https-e-contexto-seguro) para liberar o microfone em um IP da LAN. O NotesId gera automaticamente um [certificado autoassinado](docs/GLOSSARY.pt-BR.md#certificado-autoassinado) em `.certs/` (ignorado pelo Git):
+   ```bash
+   # Bash (dentro da pasta NotesId)
+   uv run guitar-string-identifier --host 0.0.0.0 --port 8000 --https
+   ```
+3. **Passo 3 de 9 — Libere a porta `8000` no firewall (`ufw`, se estiver ativo):** Verifique com `sudo ufw status`. Se estiver ativo, libere a porta `8000` **apenas para a sua sub-rede local** (ajuste `192.168.0.0/24` conforme o prefixo do seu IP):
+   ```bash
+   # Bash (Ubuntu 24.04) — libera apenas para a sua rede Wi-Fi local
+   sudo ufw allow from 192.168.0.0/24 to any port 8000 proto tcp
+   ```
+   *(Para reverter ao terminar: `sudo ufw delete allow from 192.168.0.0/24 to any port 8000 proto tcp`.)*
+4. **Passo 4 de 9 — Abra o NotesId no celular:** No Chrome do celular, abra **`https://192.168.0.10:8000`** (usando o seu IP real e `https://`).
+5. **Passo 5 de 9 — Aceite o aviso de certificado autoassinado:** Toque em **Avançado** → **Ir para 192.168.0.10 (não seguro)**. Esperado **apenas** para o seu próprio servidor local do NotesId — **nunca** faça isso em sites desconhecidos.
+6. **Passo 6 de 9 — Ative o microfone do celular no NotesId:** Em **Identificar**, toque em **Ao vivo (placa de captura)**, toque em **Atualizar** (`①`), permita o acesso ao microfone, escolha o microfone do celular e toque em **Iniciar escuta contínua** (`②`). Confirme que **`Escutando`** (`③`) fica verde.
+7. **Passo 7 de 9 — Calibre já na posição fixa de uso:** Apoie o celular em um local fixo e execute o **⚡ Auto Tuning** (Capítulo 6) sem mover o celular depois.
+8. **Passo 8 de 9 — Toque uma nota isolada por vez:** Deixe cada nota sustentar por ~1 segundo e observe o resultado na tela (espere mais `Indeterminado` e erros do que com interface USB).
+9. **Passo 9 de 9 — Encerre o servidor e volte ao modo local seguro:** Pressione `Ctrl + C` no Terminal, remova a regra do `ufw` se tiver adicionado uma e, da próxima vez, inicie normalmente com `uv run guitar-string-identifier` (padrão `127.0.0.1`).
+
+</details>
+
+#### Prévia da interface no celular
+
+<p align="center">
+  <img src="docs/images/mobile-live-capture.png" alt="Painel de captura ao vivo no celular em emulação de 390 px com marcações de 1 a 3" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/images/mobile-result-view.png" alt="Tela de resultado no celular em emulação de 390 px mostrando C4 na Corda 2 Casa 1" width="280" />
+</p>
+<p align="center"><em>Interface mobile capturada em emulação de celular no Chromium (largura 390 px, áudio de teste do EGFxSet). À esquerda: controles ao vivo (① Atualizar/selecionar microfone, ② Iniciar/parar escuta, ③ Status de escuta ativa). À direita: cartão de resultado em tela estreita.</em></p>
+
+#### Dicas para diminuir a perda de qualidade
+
+- Toque em um **ambiente silencioso** (desligue ventilador, TV, ar-condicionado e música de fundo).
+- Posicione o celular **perto do alto-falante do amplificador** (canal limpo, sem reverb/delay/distorção) ou a **15–25 cm da boca do violão** — perto o suficiente para ter sinal forte sem saturar.
+- Mantenha o celular em um **suporte ou mesa fixa** e não o mova entre a calibração e o uso.
+- **Desligue o Bluetooth** no celular para evitar que o áudio passe por microfone de fone com baixa taxa de amostragem.
+- Desative opções de **aprimoramento de áudio / isolamento de voz** nas configurações do celular, se disponíveis.
+- Deixe cada nota soar limpa por **~1 segundo** e evite encostar no celular ou soprar perto do microfone.
+
+> [!CAUTION]
+> **Aviso de segurança — sem autenticação:** O NotesId **não possui login nem senha**. Ao iniciar com `--host 0.0.0.0`, **qualquer pessoa conectada à mesma rede Wi-Fi** pode abrir a interface, escutar/analisar e alterar perfis.
+> - Use `--host 0.0.0.0` **apenas em uma rede Wi-Fi privada e confiável** (nunca em Wi-Fi público, café ou hotel).
+> - **Nunca** abra encaminhamento de porta (*port forwarding*) da porta `8000` no roteador para a internet.
+> - **Evite túneis públicos** (como ngrok ou similares): eles expõem um servidor sem autenticação na internet e fazem o seu áudio passar por servidores de terceiros.
+> - Sempre pressione `Ctrl + C` para encerrar o servidor assim que terminar.
+
+> [!NOTE]
+> **Nota para usuários de WSL2 (não testado):** Por padrão, o WSL2 roda em **modo NAT**, que esconde o servidor dentro do WSL2 dos demais aparelhos da rede local. Segundo a documentação oficial de rede do WSL2 da Microsoft, há duas alternativas para expor uma porta do WSL2 na LAN:
+> 1. **Windows 11 (22H2+):** Habilitar o **Mirrored Mode Networking** adicionando `[wsl2]` e `networkingMode=mirrored` em `%USERPROFILE%\.wslconfig`, executando `wsl --shutdown` e liberando a porta `8000` no Firewall do Windows Defender.
+> 2. **Modo NAT:** Executar `netsh interface portproxy add v4tov4 listenport=8000 listenaddress=0.0.0.0 connectport=8000 connectaddress=<IP-DO-WSL>` (PowerShell como Administrador) junto com a regra de firewall.
+>
+> *Nenhum dos dois métodos de rede LAN no WSL2 foi testado ponta a ponta com um celular real neste projeto; para uma configuração mais simples, rode o NotesId nativamente no Windows ou no Ubuntu.*
+
+**O que foi testado vs. não testado neste modo:**
+- **Testado:** opções de CLI `--host`, `--port`, `--https`, `--cert-dir`; geração automática do certificado TLS autoassinado com SANs; teste automatizado verificando REST via `https://` e WebSocket ao vivo via `wss://`; layout mobile em 390 px via emulação no Chromium.
+- **Não testado:** captura real em microfone físico de celular, comportamento em Safari/iOS, liberação de firewall/roteamento LAN (incluindo WSL2 `mirrored` e `portproxy`) em roteador Wi-Fi físico e medições de acertividade usando microfone de celular.
+
+### 5.6 Usando as telas do app
 
 <p align="center">
   <img src="docs/images/identify-c4-match.png" alt="Tela principal Identificar mostrando Dó4 acertado na Corda 2 Casa 1" width="840" />
@@ -501,7 +645,12 @@ O NotesId oferece **5 formas de calibração**. Escolha a ideal para o seu caso:
 ## 7. Perguntas frequentes e solução de problemas
 
 - **Status continua "Parado" ou medidor não mexe?** Recarregue com `Ctrl+F5` para limpar o cache do JS, ou abra `http://localhost:8000/?debug=1` para ver o estado do `AudioContext`, taxa real e eventos do WebSocket em tempo real.
-- **Microfone bloqueado no tablet/celular ou por IP da rede?** Navegadores só liberam `getUserMedia` e `AudioWorklet` em `localhost` ou `HTTPS`. Acesse via `http://localhost:8000` localmente ou use um proxy HTTPS na rede.
+- **Microfone bloqueado no tablet/celular ou por IP da rede?** Navegadores só liberam `getUserMedia` e `AudioWorklet` em `localhost` ou `HTTPS`. Inicie o servidor com `uv run guitar-string-identifier --host 0.0.0.0 --https` e abra `https://<ip-do-seu-pc>:8000` (veja a [Seção 5.5](#55-usar-o-celular-como-microfone-experimental)).
+- **O celular não abre `https://192.168.0.10:8000` (tempo esgotado ou conexão recusada)?** Confira se (1) PC e celular estão no **mesmo Wi-Fi** (e não em rede de visitantes com isolamento de clientes), (2) o servidor foi iniciado com `--host 0.0.0.0 --https`, (3) a porta `8000` está liberada no firewall do PC para redes Privadas e (4) se estiver usando WSL2, lembre que o modo NAT padrão bloqueia a LAN (veja a nota de WSL2 na Seção 5.5).
+- **Aparece "Sua conexão não é particular" / aviso de certificado no celular?** É esperado ao usar `--https` com certificado autoassinado gerado localmente. Toque em **Avançado → Ir para ... (não seguro)** *apenas* ao acessar o IP local do seu próprio PC — nunca faça isso em sites desconhecidos.
+- **A página abre no celular, mas o microfone não inicia?** Confirme que o endereço começa com **`https://`** (e não `http://`), autorize a permissão de microfone no Chrome e evite Safari/iOS (não testado).
+- **As notas no celular saem erradas ou quase sempre `Indeterminado`?** Limitação esperada do microfone de celular pelo ar (eco da sala, ruído ambiente e filtros de voz). Aproxime o celular do amplificador ou violão em ambiente silencioso, rode o **⚡ Auto Tuning** nessa posição fixa ou use uma interface de áudio USB Hi-Z para maior precisão.
+- **Fone ou microfone Bluetooth conectado ao celular?** Desligue o Bluetooth. Perfis de chamada Bluetooth reduzem o áudio para 8–16 kHz, apagando os parciais agudos necessários para medir a inarmonicidade $B$.
 - **Minha placa USB não aparece no WSL?** Comportamento esperado do WSL2. O NotesId captura o áudio **no navegador do Windows** via Web Audio API e envia PCM por WebSocket para o WSL2.
 - **Sustain cortado ou nota errada no Windows?** Desative os **Aprimoramentos de áudio** do Windows na placa de entrada (eles tratam o sustain da guitarra como ruído de fundo).
 - **Muito ronco de 60 Hz ou ruído ambiente?** Rode o **⚡ Auto Tuning**: a Etapa 2 detecta 60 Hz e seus harmônicos e exclui essas faixas da busca de parciais.
