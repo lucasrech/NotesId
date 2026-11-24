@@ -92,4 +92,24 @@ Um valor de **0% a 100%** que indica o quanto o candidato vencedor se destacou d
 
 ### DI (linha direta) vs Microfone
 - **DI / Interface de áudio (entrada Hi-Z / Instrumento):** captura o sinal elétrico puro do captador da guitarra pelo cabo P10, sem eco da sala nem ruído ambiente — é o cenário ideal para o NotesId.
-- **Microfone (notebook/tablet):** captura o som pelo ar, misturando ruído ambiente, reverberação da sala e filtros de voz do sistema operacional, o que reduz a precisão na medição de $B$.
+- **Microfone (notebook/tablet/celular):** captura o som pelo ar, misturando ruído ambiente, reverberação da sala e filtros de voz do sistema operacional, o que reduz a precisão na medição de $B$.
+
+---
+
+## Rede local e HTTPS
+
+### IP local / Rede local (LAN)
+O endereço privado que o roteador Wi-Fi atribui ao seu computador dentro da rede da sua casa ou estúdio (por exemplo, `192.168.0.10`).
+- **Detalhe importante:** esse endereço só existe **dentro do seu Wi-Fi** — ele não é um endereço público na internet. Outros aparelhos na mesma rede (como o seu celular) conseguem falar direto com o computador sem enviar o áudio para fora.
+
+### HTTPS e contexto seguro
+`HTTPS` é a versão criptografada do `HTTP` (assim como `WSS` é a versão criptografada do `WS` para WebSockets).
+- **Por que o NotesId precisa disso no celular:** navegadores modernos tratam `http://localhost` como um **contexto seguro**, então o microfone funciona no mesmo computador em HTTP simples. Quando você acessa pelo IP local (como `192.168.0.10`) a partir de um celular, o navegador **bloqueia o acesso ao microfone (`getUserMedia` e `AudioWorklet`)** a menos que a página use `HTTPS`.
+
+### Certificado autoassinado
+Um certificado digital TLS gerado localmente pelo seu próprio computador, em vez de ser emitido por uma autoridade certificadora pública (como Let's Encrypt ou DigiCert).
+- **Por que o navegador mostra um aviso:** o navegador verifica se alguma autoridade conhecida atesta a identidade do servidor. Como foi o seu próprio PC quem gerou o certificado para o seu IP local, aparece um alerta como *"Sua conexão não é particular"*. Esse aviso é esperado **apenas** ao acessar o seu próprio servidor local do NotesId — **nunca** aceite esse aviso em sites desconhecidos.
+
+### Firewall
+Uma barreira de segurança embutida no Windows (Firewall do Windows Defender) e no Ubuntu (`ufw`) que bloqueia, por padrão, conexões recebidas da rede.
+- Para que o celular consiga alcançar o NotesId na porta `8000`, você libera temporariamente a entrada na porta `8000` apenas na sua **rede Privada / local**, e pode remover a regra assim que terminar o teste.

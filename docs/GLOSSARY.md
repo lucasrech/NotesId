@@ -92,4 +92,24 @@ A **0%–100%** score showing how clearly the top candidate beats the runners-up
 
 ### DI (Direct Input) vs. Microphone
 - **DI / Audio Interface (Hi-Z / Instrument input):** captures the pure electrical signal from the guitar pickup via a 1/4" cable with no room echo or ambient noise — ideal for NotesId.
-- **Microphone (laptop/tablet):** captures airborne sound mixed with room reverb, ambient noise, and OS voice filters, reducing $B$ measurement accuracy.
+- **Microphone (laptop/tablet/phone):** captures airborne sound mixed with room reverb, ambient noise, and OS voice filters, reducing $B$ measurement accuracy.
+
+---
+
+## Local Network & HTTPS
+
+### Local IP / Local Network (LAN)
+The private address your Wi-Fi router assigns to your computer inside your home or studio network (for example, `192.168.0.10`).
+- **Key detail:** this address only exists **inside your local Wi-Fi** — it is not a public internet address, so other devices on the same Wi-Fi (such as your phone) can reach your computer directly without sending audio over the internet.
+
+### HTTPS & Secure Context
+`HTTPS` is the encrypted version of `HTTP` (just as `WSS` is the encrypted version of `WS` for WebSockets).
+- **Why NotesId needs it on a phone:** modern browsers treat `http://localhost` as a **secure context**, so the microphone works on the same computer over plain HTTP. When you open a page using a LAN IP like `192.168.0.10` from a phone, browsers **block microphone capture (`getUserMedia` and `AudioWorklet`)** unless the connection uses `HTTPS`.
+
+### Self-Signed Certificate
+A digital TLS certificate generated locally by your own computer instead of being signed by a commercial public Certificate Authority (like Let's Encrypt or DigiCert).
+- **Why the browser shows a warning:** the browser checks whether a known authority vouched for the server. Because your own computer signed it for your private LAN IP, the browser warns *"Your connection is not private"*. That warning is expected **only** for your own local NotesId server — **never** bypass it on unknown websites.
+
+### Firewall
+A security guard built into Windows (Windows Defender Firewall) and Ubuntu (`ufw`) that blocks unsolicited incoming network connections by default.
+- To let your phone reach NotesId on port `8000`, you temporarily allow incoming connections on port `8000` for your **Private / local network** only, and you can remove that rule once you finish testing.
