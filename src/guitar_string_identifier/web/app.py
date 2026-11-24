@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -16,6 +17,8 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
+    Response,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -343,7 +346,16 @@ def create_app(
             )
         return sess
 
-    # --- Frontend estático ---
+    # --- Frontend estático (com Cache-Control: no-cache para evitar JS/HTML desatualizado) ---
+    @app.middleware("http")
+    async def no_cache_static_middleware(request: Request, call_next: Any) -> Response:
+        """Garante que HTML/JS/CSS atualizados cheguem imediatamente ao navegador."""
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -946,6 +958,7 @@ def create_app(
 
         # Estágios progressivos (s): primeira estimativa ~0,30 s -> refina em 0,60 s -> final 0,95 s
         stage_secs = (0.30, 0.60, 0.95)
+        last_heartbeat = time.monotonic()
 
         try:
             while True:
@@ -966,12 +979,21 @@ def create_app(
                         capture_chunks.clear()
                         captured_samples = 0
                         next_stage_idx = 0
+                        last_heartbeat = time.monotonic()
                         await websocket.send_json(
                             {
                                 "type": "ready",
                                 "sample_rate": sample_rate,
                                 "profile": profile.name,
                                 "onset_threshold_db": profile.capture.onset_threshold_db,
+                            }
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "status",
+                                "state": "listening",
+                                "sample_rate": sample_rate,
+                                "profile": profile.name,
                             }
                         )
                     elif msg_type == "trigger" and capture_chunks:
@@ -1009,6 +1031,19 @@ def create_app(
                         "clipping": clipping,
                     }
                 )
+
+                now = time.monotonic()
+                if now - last_heartbeat >= 1.0:
+                    last_heartbeat = now
+                    await websocket.send_json(
+                        {
+                            "type": "heartbeat",
+                            "state": "listening",
+                            "rms_db": round(rms_db, 1),
+                            "peak": round(peak, 4),
+                            "clipping": clipping,
+                        }
+                    )
 
                 onset_thresh = profile.capture.onset_threshold_db
                 sustain_end_thresh = onset_thresh - 8.0
