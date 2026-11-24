@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import math
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -48,6 +50,7 @@ from guitar_string_identifier.sources.dataset_source import (
     list_egfxset_files,
 )
 from guitar_string_identifier.sources.file_source import FileAudioSource
+from guitar_string_identifier.web.tls import ensure_self_signed_cert
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -1110,11 +1113,106 @@ def create_app(
 app = create_app()
 
 
-def run_server() -> None:
-    """Ponto de entrada CLI para rodar o servidor web."""
-    uvicorn.run(
-        "guitar_string_identifier.web.app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
+def build_server_parser() -> argparse.ArgumentParser:
+    """Constrói o parser de argumentos da CLI ``guitar-string-identifier``.
+
+    Returns:
+        Instância de ``ArgumentParser`` configurada com ``--host``, ``--port``,
+        ``--https`` e ``--cert-dir`` (mensagens bilíngues pt-BR / EN).
+    """
+    parser = argparse.ArgumentParser(
+        prog="guitar-string-identifier",
+        description=(
+            "Servidor web do NotesId (identificador clássico de corda e casa de guitarra) / "
+            "NotesId web server (classical DSP guitar string and fret identifier)."
+        ),
     )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Endereço de escuta (padrão: 127.0.0.1, apenas neste computador; "
+            "use 0.0.0.0 para aceitar conexões da rede local) / "
+            "Bind host (default: 127.0.0.1, local-only; use 0.0.0.0 for LAN access)."
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Porta TCP do servidor (padrão: 8000) / Server TCP port (default: 8000).",
+    )
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help=(
+            "Habilita HTTPS com certificado autoassinado local (necessário para captura "
+            "de microfone em celular pela rede local) / "
+            "Enable HTTPS with a local self-signed certificate (required by mobile "
+            "browsers for microphone capture over LAN)."
+        ),
+    )
+    parser.add_argument(
+        "--cert-dir",
+        type=Path,
+        default=Path(".certs"),
+        help=(
+            "Diretório ignorado pelo Git para salvar cert.pem e key.pem (padrão: .certs) / "
+            "Git-ignored directory for cert.pem and key.pem (default: .certs)."
+        ),
+    )
+    return parser
+
+
+def parse_server_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Faz o parse dos argumentos de linha de comando do servidor web.
+
+    Args:
+        argv: Lista opcional de argumentos; se omitida, lê ``sys.argv[1:]``.
+
+    Returns:
+        Namespace com ``host``, ``port``, ``https`` e ``cert_dir``.
+    """
+    return build_server_parser().parse_args(argv)
+
+
+def run_server(argv: Sequence[str] | None = None) -> None:
+    """Ponto de entrada CLI para rodar o servidor web do NotesId.
+
+    Por padrão escuta apenas em ``127.0.0.1:8000`` via HTTP (uso seguro no
+    próprio computador). Quando ``--https`` é informado, gera (ou reutiliza)
+    um certificado TLS autoassinado em ``--cert-dir`` (por padrão ``.certs/``)
+    e sobe o Uvicorn com TLS para habilitar ``https://`` e ``wss://``.
+
+    Args:
+        argv: Lista opcional de argumentos CLI (usada em testes).
+    """
+    args = parse_server_args(argv)
+    scheme = "https" if args.https else "http"
+    uvicorn_kwargs: dict[str, Any] = {
+        "host": args.host,
+        "port": args.port,
+        "reload": False,
+    }
+
+    san_ips: list[str] = []
+    if args.https:
+        cert_path, key_path, san_ips = ensure_self_signed_cert(
+            cert_dir=args.cert_dir,
+            extra_ips=[args.host],
+        )
+        uvicorn_kwargs["ssl_certfile"] = str(cert_path)
+        uvicorn_kwargs["ssl_keyfile"] = str(key_path)
+        print(f"[NotesId] HTTPS habilitado com certificado autoassinado em: {args.cert_dir}")
+
+    print(f"[NotesId] Servidor em {scheme}://localhost:{args.port}")
+    if args.host == "0.0.0.0":
+        lan_ips = [ip for ip in san_ips if ip not in {"127.0.0.1", "::1"}]
+        for ip in lan_ips:
+            print(f"[NotesId] Acesso na rede local (LAN): {scheme}://{ip}:{args.port}")
+        print(
+            "[NotesId] AVISO: --host 0.0.0.0 expõe a interface sem autenticação na rede local. "
+            "Use apenas em rede confiável e encerre com Ctrl+C ao terminar."
+        )
+
+    uvicorn.run("guitar_string_identifier.web.app:app", **uvicorn_kwargs)

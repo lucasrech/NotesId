@@ -16,11 +16,15 @@ certifi==2026.11.20
     #   httpcore
     #   httpx
 cffi==2.1.1
-    # via soundfile
+    # via
+    #   cryptography
+    #   soundfile
 click==8.5.1
     # via uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via pytest
+cryptography==50.0.2
+    # via guitar-string-identifier
 fastapi==0.165.0
     # via guitar-string-identifier
 h11==0.16.0

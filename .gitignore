@@ -42,3 +42,9 @@ Thumbs.db
 
 # Local simulation sandbox (never committed)
 local_sim/
+
+# Auto-generated local TLS certificates and private keys (never committed)
+.certs/
+*.pem
+*.key
+*.crt
