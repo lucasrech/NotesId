@@ -20,11 +20,21 @@ const state = {
   profiles: [],
   datasetFiles: [],
   live: {
+    phase: "stopped", // stopped | connecting | listening | detected | stopping | error
     running: false,
     audioCtx: null,
     stream: null,
     workletNode: null,
     ws: null,
+    sampleRate: 48000,
+    channel: 0,
+    lastRmsDb: -90.0,
+    lastPeak: 0.0,
+    lastClipping: false,
+    lastSignalTs: 0,
+    meterRafId: null,
+    debugEnabled: new URLSearchParams(window.location.search).get("debug") === "1",
+    debugLogs: [],
   },
   calibration: {
     steps: [],
@@ -67,7 +77,12 @@ async function api(url, opts = {}) {
 }
 
 /* ==================== HELPER: AUDIOWORKLET CAPTURE ==================== */
-async function startWorkletCapture(deviceId, chunkSize, onChunk) {
+async function startWorkletCapture(deviceId, chunkSize, onChunk, channelIndex = 0) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      "API de captura de áudio indisponível. Acesse via http://localhost:8000 ou HTTPS."
+    );
+  }
   const constraints = {
     audio: {
       deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -83,11 +98,29 @@ async function startWorkletCapture(deviceId, chunkSize, onChunk) {
   const settings = track && track.getSettings ? track.getSettings() : {};
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   const audioCtx = new AudioCtx();
-  await audioCtx.audioWorklet.addModule("/static/pcm-worklet.js");
+
+  if (audioCtx.state === "suspended") {
+    await audioCtx.resume();
+  }
+  if (!audioCtx.audioWorklet) {
+    stream.getTracks().forEach((t) => t.stop());
+    await audioCtx.close();
+    throw new Error(
+      "AudioWorklet indisponível neste navegador ou contexto não seguro (use localhost ou HTTPS)."
+    );
+  }
+
+  try {
+    await audioCtx.audioWorklet.addModule("/static/pcm-worklet.js?v=2");
+  } catch (err) {
+    stream.getTracks().forEach((t) => t.stop());
+    await audioCtx.close();
+    throw new Error(`Falha ao carregar o processador de áudio (pcm-worklet.js): ${err.message}`);
+  }
 
   const source = audioCtx.createMediaStreamSource(stream);
   const workletNode = new AudioWorkletNode(audioCtx, "pcm-capture-processor", {
-    processorOptions: { chunkSize: chunkSize || 2048, channelIndex: 0 },
+    processorOptions: { chunkSize: chunkSize || 2048, channelIndex: channelIndex || 0 },
   });
   workletNode.port.onmessage = (ev) => {
     if (onChunk) onChunk(new Float32Array(ev.data));
@@ -103,7 +136,10 @@ async function startWorkletCapture(deviceId, chunkSize, onChunk) {
     stream,
     audioCtx,
     workletNode,
-    sampleRate: settings.sampleRate || audioCtx.sampleRate,
+    // A taxa real das amostras geradas pelo AudioWorklet é sempre audioCtx.sampleRate
+    sampleRate: audioCtx.sampleRate,
+    trackSampleRate: settings.sampleRate || null,
+    channelIndex: channelIndex || 0,
     baseLatency: typeof audioCtx.baseLatency === "number" ? audioCtx.baseLatency : null,
   };
 }
@@ -542,26 +578,198 @@ async function refreshAudioDevices(selectCss = "#audioDeviceSelect") {
   return ranked;
 }
 
+function liveDebugLog(msg) {
+  if (!state.live.debugEnabled) return;
+  const ts = new Date().toLocaleTimeString("pt-BR");
+  state.live.debugLogs.push(`[${ts}] ${msg}`);
+  if (state.live.debugLogs.length > 14) state.live.debugLogs.shift();
+  const panel = $("#liveDebugPanel");
+  const pre = $("#liveDebugPre");
+  if (!panel || !pre) return;
+  panel.classList.remove("hidden");
+  const l = state.live;
+  const wsStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
+  const wsState = l.ws ? wsStates[l.ws.readyState] || l.ws.readyState : "none";
+  const ctxState = l.audioCtx ? l.audioCtx.state : "none";
+  const header = `fase=${l.phase} | AudioContext=${ctxState} | sr=${l.sampleRate} Hz | ch=${l.channel} | WS=${wsState}`;
+  pre.textContent = `${header}\n${state.live.debugLogs.join("\n")}`;
+}
+
+function showLiveError(message) {
+  const box = $("#liveErrorBox");
+  const txt = $("#liveErrorText");
+  if (!box || !txt) return;
+  txt.textContent = `⚠ ${message}`;
+  box.classList.remove("hidden");
+  liveDebugLog(`ERRO: ${message}`);
+}
+
+function clearLiveError() {
+  const box = $("#liveErrorBox");
+  if (box) box.classList.add("hidden");
+}
+
+function formatCaptureError(err) {
+  const name = (err && err.name) || "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Permissão de microfone/placa negada pelo navegador. Clique no cadeado da barra de endereço e libere o áudio.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "Placa de captura selecionada não encontrada. Clique em 'Atualizar' e selecione outra entrada.";
+  }
+  if (name === "NotReadableError" || name === "AbortError") {
+    return "A placa de áudio está em uso exclusivo por outro aplicativo ou desconectou. Feche outros apps de áudio e tente novamente.";
+  }
+  return (err && err.message) || "Erro desconhecido ao abrir captura de áudio.";
+}
+
+/**
+ * Máquina de estados explícita da escuta contínua:
+ * stopped -> connecting -> listening -> detected -> stopping -> stopped (+ error).
+ */
+function setLiveState(nextPhase, customLabel = null) {
+  state.live.phase = nextPhase;
+  const statusEl = $("#liveStatus");
+  const dotEl = $("#liveStatusDot");
+  const toggleBtn = $("#btnLiveToggle");
+  const analyzeBtn = $("#btnLiveAnalyzeNow");
+
+  if (dotEl) {
+    dotEl.className = `status-dot ${nextPhase}`;
+  }
+  if (statusEl) {
+    statusEl.className = `live-status ${nextPhase}`;
+    const defaultLabels = {
+      stopped: "Parado",
+      connecting: "Conectando...",
+      listening: `Escutando (${state.live.sampleRate} Hz)`,
+      detected: `Escutando • Nota detectada`,
+      stopping: "Encerrando...",
+      error: "Erro na captura",
+    };
+    statusEl.textContent = customLabel || defaultLabels[nextPhase] || nextPhase;
+  }
+
+  if (toggleBtn) {
+    if (nextPhase === "connecting") {
+      toggleBtn.textContent = "Conectando...";
+      toggleBtn.disabled = true;
+    } else if (nextPhase === "listening" || nextPhase === "detected") {
+      toggleBtn.textContent = "Parar escuta";
+      toggleBtn.disabled = false;
+    } else if (nextPhase === "stopping") {
+      toggleBtn.textContent = "Encerrando...";
+      toggleBtn.disabled = true;
+    } else {
+      toggleBtn.textContent = "Iniciar escuta contínua";
+      toggleBtn.disabled = false;
+    }
+  }
+
+  if (analyzeBtn) {
+    analyzeBtn.disabled = !(nextPhase === "listening" || nextPhase === "detected");
+  }
+
+  liveDebugLog(`estado -> ${nextPhase}${customLabel ? ` (${customLabel})` : ""}`);
+}
+
+function startLiveMeterLoop() {
+  if (state.live.meterRafId) cancelAnimationFrame(state.live.meterRafId);
+  const renderFrame = () => {
+    const l = state.live;
+    if (!l.running) {
+      l.meterRafId = null;
+      return;
+    }
+    const db = l.lastRmsDb;
+    $("#meterDb").textContent = db <= -89 ? "-∞ dB" : `${db.toFixed(1)} dB`;
+    const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+    $("#meterFill").style.width = `${pct}%`;
+    $("#clippingBadge").classList.toggle("hidden", !l.lastClipping);
+
+    // Dica se estiver escutando mas sem sinal audível por mais de 3,5 s
+    const noSignal =
+      (l.phase === "listening" || l.phase === "detected") &&
+      l.lastSignalTs > 0 &&
+      performance.now() - l.lastSignalTs > 3500;
+    const hintEl = $("#liveNoSignalHint");
+    if (hintEl) hintEl.classList.toggle("hidden", !noSignal);
+
+    l.meterRafId = requestAnimationFrame(renderFrame);
+  };
+  state.live.meterRafId = requestAnimationFrame(renderFrame);
+}
+
 async function toggleLiveCapture() {
-  if (state.live.running) {
+  if (state.live.running || state.live.phase === "connecting") {
     stopLiveCapture();
     return;
   }
-  const deviceId = $("#audioDeviceSelect").value;
-  try {
-    const wsProto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${wsProto}://${location.host}/ws/live`);
-    ws.binaryType = "arraybuffer";
 
-    const cap = await startWorkletCapture(deviceId, 2048, (floatChunk) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(floatChunk.buffer);
-      }
-    });
+  // Garante que não há conflito com o assistente do Auto Tuning
+  stopAutoTuneAudio();
+  clearLiveError();
+  setLiveState("connecting", "Abrindo placa de áudio...");
+
+  const deviceId = $("#audioDeviceSelect").value;
+  const channelIdx =
+    (state.editingProfile && state.editingProfile.capture && state.editingProfile.capture.channel) ||
+    0;
+
+  let cap = null;
+  try {
+    // Passo 1: abre placa + AudioWorklet ANTES do WebSocket para evitar race condition no ws.onopen
+    let activeWs = null;
+    cap = await startWorkletCapture(
+      deviceId,
+      2048,
+      (floatChunk) => {
+        // Medição local imediata para animar o medidor via requestAnimationFrame
+        let sum = 0;
+        let pk = 0;
+        for (let i = 0; i < floatChunk.length; i++) {
+          const v = floatChunk[i];
+          const av = v < 0 ? -v : v;
+          if (av > pk) pk = av;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / Math.max(1, floatChunk.length) + 1e-18);
+        const rmsDb = 20 * Math.log10(rms + 1e-12);
+        state.live.lastRmsDb = rmsDb;
+        state.live.lastPeak = pk;
+        state.live.lastClipping = pk >= 0.985;
+        if (rmsDb > -50.0) {
+          state.live.lastSignalTs = performance.now();
+        }
+        if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+          activeWs.send(floatChunk.buffer);
+        }
+      },
+      channelIdx
+    );
+
+    state.live.sampleRate = cap.sampleRate;
+    state.live.channel = cap.channelIndex;
+    state.live.audioCtx = cap.audioCtx;
+    state.live.stream = cap.stream;
+    state.live.workletNode = cap.workletNode;
+    state.live.running = true;
+    state.live.lastSignalTs = performance.now();
 
     $("#liveSampleRateInfo").textContent = `Taxa real obtida: ${cap.sampleRate} Hz (AudioWorklet)`;
+    setLiveState("connecting", "Conectando ao servidor...");
+    startLiveMeterLoop();
+
+    // Passo 2: abre WebSocket e registra TODOS os handlers sincronamente (sem await no meio)
+    const wsProto = location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${wsProto}://${location.host}/ws/live`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    activeWs = ws;
+    state.live.ws = ws;
 
     ws.onopen = () => {
+      liveDebugLog(`WS aberto: ${wsUrl}`);
       ws.send(
         JSON.stringify({
           type: "config",
@@ -569,51 +777,98 @@ async function toggleLiveCapture() {
           profile: state.activeProfile,
         })
       );
-      $("#liveStatus").textContent = `Escutando (${cap.sampleRate} Hz)...`;
-      $("#btnLiveToggle").textContent = "Parar escuta";
-      $("#btnLiveAnalyzeNow").disabled = false;
     };
 
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-      if (msg.type === "level") {
-        $("#meterDb").textContent = `${msg.rms_db.toFixed(1)} dB`;
-        const pct = Math.max(0, Math.min(100, ((msg.rms_db + 60) / 60) * 100));
-        $("#meterFill").style.width = `${pct}%`;
-        $("#clippingBadge").classList.toggle("hidden", !msg.clipping);
+      if (msg.type === "status" && msg.state === "listening") {
+        liveDebugLog(`Servidor confirmou: listening (${msg.sample_rate} Hz)`);
+        setLiveState("listening", `Escutando (${cap.sampleRate} Hz)`);
+      } else if (msg.type === "ready" && state.live.phase === "connecting") {
+        liveDebugLog(`Servidor pronto: ${msg.profile} (${msg.sample_rate} Hz)`);
+        setLiveState("listening", `Escutando (${cap.sampleRate} Hz)`);
+      } else if (msg.type === "heartbeat") {
+        liveDebugLog(`heartbeat rms=${msg.rms_db} dB`);
+      } else if (msg.type === "level") {
+        // Sincroniza clipping reportado pelo servidor
+        if (msg.clipping) state.live.lastClipping = true;
       } else if (msg.type === "result") {
+        setLiveState("detected", `Escutando • ${msg.data.note || "nota"}`);
         renderResult(msg.data);
+      } else if (msg.type === "error") {
+        showLiveError(msg.message || "Erro retornado pelo servidor de análise.");
+        stopLiveCapture("error");
       }
     };
 
-    ws.onclose = () => {
-      if (state.live.running) stopLiveCapture();
+    ws.onerror = () => {
+      liveDebugLog("WS onerror disparado");
+      if (state.live.running) {
+        showLiveError(
+          "Não foi possível conectar ao servidor (/ws/live). Verifique se o backend está rodando."
+        );
+        stopLiveCapture("error");
+      }
     };
 
-    state.live = {
-      running: true,
-      audioCtx: cap.audioCtx,
-      stream: cap.stream,
-      workletNode: cap.workletNode,
-      ws,
+    ws.onclose = (ev) => {
+      liveDebugLog(`WS fechado (code=${ev.code})`);
+      if (state.live.running && state.live.phase !== "stopping") {
+        showLiveError("A conexão com o servidor (/ws/live) foi encerrada inesperadamente.");
+        stopLiveCapture("error");
+      }
     };
   } catch (err) {
-    alert(`Erro ao iniciar captura ao vivo (AudioWorklet): ${err.message}`);
+    if (cap) {
+      if (cap.workletNode) cap.workletNode.disconnect();
+      if (cap.audioCtx) cap.audioCtx.close();
+      if (cap.stream) cap.stream.getTracks().forEach((t) => t.stop());
+    }
+    showLiveError(formatCaptureError(err));
+    stopLiveCapture("error");
   }
 }
 
-function stopLiveCapture() {
+function stopLiveCapture(finalPhase = "stopped") {
   const l = state.live;
-  if (l.workletNode) l.workletNode.disconnect();
-  if (l.audioCtx) l.audioCtx.close();
+  if (l.phase !== "stopped" && l.phase !== "error") {
+    setLiveState("stopping");
+  }
+  l.running = false;
+  if (l.meterRafId) {
+    cancelAnimationFrame(l.meterRafId);
+    l.meterRafId = null;
+  }
+  if (l.workletNode) {
+    try {
+      l.workletNode.disconnect();
+    } catch (_) {}
+  }
+  if (l.audioCtx) {
+    try {
+      l.audioCtx.close();
+    } catch (_) {}
+  }
   if (l.stream) l.stream.getTracks().forEach((t) => t.stop());
-  if (l.ws && l.ws.readyState <= 1) l.ws.close();
-  state.live = { running: false, audioCtx: null, stream: null, workletNode: null, ws: null };
-  $("#btnLiveToggle").textContent = "Iniciar escuta contínua";
-  $("#btnLiveAnalyzeNow").disabled = true;
-  $("#liveStatus").textContent = "Parado";
+  if (l.ws && l.ws.readyState <= 1) {
+    try {
+      l.ws.close();
+    } catch (_) {}
+  }
+  l.audioCtx = null;
+  l.stream = null;
+  l.workletNode = null;
+  l.ws = null;
+  l.lastRmsDb = -90.0;
+  l.lastClipping = false;
+
+  $("#meterDb").textContent = "-∞ dB";
   $("#meterFill").style.width = "0%";
   $("#clippingBadge").classList.add("hidden");
+  const hintEl = $("#liveNoSignalHint");
+  if (hintEl) hintEl.classList.add("hidden");
+
+  setLiveState(finalPhase === "error" ? "error" : "stopped");
 }
 
 /* ==================== PERFIS & CONFIGURAÇÃO (AUTO/MANUAL) ==================== */
@@ -1537,6 +1792,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   $("#btnRefreshDevices").addEventListener("click", () => refreshAudioDevices("#audioDeviceSelect"));
   $("#btnLiveToggle").addEventListener("click", toggleLiveCapture);
+  const retryBtn = $("#btnLiveRetry");
+  if (retryBtn) {
+    retryBtn.addEventListener("click", () => {
+      clearLiveError();
+      toggleLiveCapture();
+    });
+  }
+  if (state.live.debugEnabled) {
+    liveDebugLog("Modo diagnóstico (?debug=1) ativo");
+  }
   $("#btnLiveAnalyzeNow").addEventListener("click", () => {
     if (state.live.ws && state.live.ws.readyState === WebSocket.OPEN) {
       state.live.ws.send(JSON.stringify({ type: "trigger" }));
